@@ -51,6 +51,7 @@ target_include_directories(netmon_data PUBLIC src)
 # The dashboard application: theme, plus the simulation library and Raylib.
 add_executable(netmon
     src/main.c
+    src/dashboard.c
     src/theme.c
 )
 target_link_libraries(netmon PRIVATE netmon_data raylib)

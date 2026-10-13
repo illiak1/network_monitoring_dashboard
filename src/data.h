@@ -4,7 +4,8 @@
  * Parts: Ring (fixed-size sample history), Device (generator state plus
  * measured values), Alert (circular log), Dataset (everything, advanced in
  * fixed ticks by data_update) and read-only queries (summary, top talkers).
- * data.c implements it.
+ * data.c implements it; dashboard.h embeds one Dataset and dashboard.c
+ * reads it through the accessors below.
  */
 #ifndef DATA_H
 #define DATA_H

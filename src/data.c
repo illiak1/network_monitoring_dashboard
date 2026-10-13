@@ -4,10 +4,10 @@
  * (circular log), Devices (catalogue, per-device step, status
  * classification), Simulation (one tick, warm-up, update loop) and
  * Queries (summary, top talkers).
- * No Raylib dependency; tests/test_data.c exercises it headless through
- * data.h. Simulated values are a pure function of the seed and the tick
- * count, so runs are reproducible (only alert timestamps use the wall
- * clock).
+ * No Raylib dependency; the dashboard reads the result through data.h and
+ * tests/test_data.c exercises it headless. Simulated values are a pure
+ * function of the seed and the tick count, so runs are reproducible (only
+ * alert timestamps use the wall clock).
  */
 #include "data.h"
 
