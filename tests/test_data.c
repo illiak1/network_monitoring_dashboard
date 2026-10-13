@@ -1,13 +1,14 @@
 /* test_data.c - headless tests for the simulation layer (src/data.c).
  *
  * Covers the ring buffer, initialisation, determinism, the tick
- * accumulator and long-run invariants. Links only data.c and data.h, so no
- * Raylib or display is needed.
+ * accumulator, long-run invariants, the alert log and the top-talker
+ * query. Links only data.c and data.h, so no Raylib or display is needed.
  * `make test` builds it with ASan/UBSan; CMake registers it for ctest.
  * Exit status is 0 when every CHECK passed, 1 otherwise.
  */
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "data.h"
 
@@ -49,7 +50,7 @@ static void test_ring(void)
 }
 
 /* Init: the warm-up fills every history ring and the device latency
- * history (60 entries). */
+ * history (60 entries), and the alert log stays within its capacity. */
 static void test_init(void)
 {
     static Dataset d;
@@ -58,6 +59,7 @@ static void test_init(void)
     CHECK(d.bw_out.count == RING_CAP);
     CHECK(d.net_latency.count == RING_CAP);
     CHECK(d.devices[0].latency_hist.count == 60);
+    CHECK(d.alert_count <= ALERT_CAP);
 }
 
 /* Determinism: the same seed gives the same trajectory, a different seed
@@ -73,6 +75,7 @@ static void test_determinism(void)
     }
     CHECK(a.tick_count == b.tick_count);
     CHECK(ring_last(&a.bw_in) == ring_last(&b.bw_in));
+    CHECK(a.alert_serial == b.alert_serial);
     for (int i = 0; i < DEVICE_COUNT; i++)
         CHECK(a.devices[i].latency_ms == b.devices[i].latency_ms);
 
@@ -110,7 +113,7 @@ static void test_invariants(void)
     static Dataset d;
     data_init(&d, 99);
 
-    int saw_warning = 0, saw_down = 0;
+    int saw_warning = 0, saw_down = 0, saw_peak_alert = 0;
     float max_in = 0.0f, min_in = 1e9f;
 
     for (int step = 0; step < 20000; step++) {
@@ -143,6 +146,13 @@ static void test_invariants(void)
         if (rx < min_in) min_in = rx;
     }
 
+    /* Informational only: whether a utilisation alert is still in the log
+     * depends on the seed, so it is printed, not asserted. */
+    for (int i = 0; i < data_alert_count(&d); i++) {
+        if (strstr(data_alert(&d, i)->message, "utilisation"))
+            saw_peak_alert = 1;
+    }
+
     CHECK(saw_warning);
     CHECK(saw_down);
     /* Calibration bounds of the generator: busy periods must exceed
@@ -150,7 +160,65 @@ static void test_invariants(void)
      * ~1.1 Gbps at load 1.0, load is capped at 1.3) and never idle. */
     CHECK(max_in > 300.0f && max_in < 1500.0f);
     CHECK(min_in > 50.0f);
-    printf("  inbound range over run: %.0f .. %.0f Mbps\n", (double)min_in, (double)max_in);
+    printf("  inbound range over run: %.0f .. %.0f Mbps, utilisation alert in log: %d\n",
+           (double)min_in, (double)max_in, saw_peak_alert);
+}
+
+/* Alert log: 40000 ticks produce far more than ALERT_CAP alerts, so the
+ * log has wrapped. Checks capacity, newest-first order with consecutive
+ * serials, acknowledge toggling, bounds handling and acknowledge-all. */
+static void test_alerts(void)
+{
+    static Dataset d;
+    data_init(&d, 5);
+    for (int i = 0; i < 40000; i++)
+        data_update(&d, SIM_TICK_S);
+
+    CHECK(data_alert_count(&d) == ALERT_CAP);
+    /* Newest first: serials strictly decrease with index. */
+    for (int i = 1; i < data_alert_count(&d); i++)
+        CHECK(data_alert(&d, i - 1)->serial == data_alert(&d, i)->serial + 1);
+
+    data_alert_toggle_ack(&d, 0);
+    CHECK(data_alert(&d, 0)->acknowledged);
+    data_alert_toggle_ack(&d, 0);
+    CHECK(!data_alert(&d, 0)->acknowledged);
+    data_alert_toggle_ack(&d, ALERT_CAP + 10);  /* out of range is ignored */
+
+    data_alert_ack_all(&d);
+    Summary s;
+    data_summary(&d, &s);
+    CHECK(s.open_alerts[SEV_INFO] + s.open_alerts[SEV_WARNING] + s.open_alerts[SEV_CRITICAL] == 0);
+}
+
+/* Top talkers: result is sorted by rx+tx descending, honours the limit,
+ * and with max = DEVICE_COUNT is a permutation of all devices. */
+static void test_top_talkers(void)
+{
+    static Dataset d;
+    data_init(&d, 11);
+    for (int i = 0; i < 100; i++)
+        data_update(&d, SIM_TICK_S);
+
+    int idx[8];
+    int n = data_top_talkers(&d, idx, 8);
+    CHECK(n == 8);
+    for (int i = 1; i < n; i++) {
+        const Device *a = &d.devices[idx[i - 1]];
+        const Device *b = &d.devices[idx[i]];
+        CHECK(a->rx_mbps + a->tx_mbps >= b->rx_mbps + b->tx_mbps);
+    }
+
+    /* Every device must appear exactly once when nothing is cut off. */
+    int all[DEVICE_COUNT];
+    CHECK(data_top_talkers(&d, all, DEVICE_COUNT) == DEVICE_COUNT);
+    int seen[DEVICE_COUNT] = { 0 };
+    for (int i = 0; i < DEVICE_COUNT; i++)
+        seen[all[i]]++;
+    for (int i = 0; i < DEVICE_COUNT; i++)
+        CHECK(seen[i] == 1);
+
+    CHECK(data_top_talkers(&d, idx, 3) == 3);
 }
 
 /* Runs all tests and returns 1 if any check failed. */
@@ -161,6 +229,8 @@ int main(void)
     test_determinism();
     test_tick_accumulator();
     test_invariants();
+    test_alerts();
+    test_top_talkers();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

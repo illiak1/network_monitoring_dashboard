@@ -1,15 +1,19 @@
-/* data.c - network simulation: generators, fault injection, device status.
+/* data.c - network simulation: generators, fault injection, alert log.
  *
- * Sections: RNG (xorshift32 helpers), Ring (history buffer), Devices
- * (catalogue, per-device step, status classification), Simulation (one
- * tick, warm-up, update loop) and Queries (summary).
+ * Sections: RNG (xorshift32 helpers), Ring (history buffer), Alerts
+ * (circular log), Devices (catalogue, per-device step, status
+ * classification), Simulation (one tick, warm-up, update loop) and
+ * Queries (summary, top talkers).
  * No Raylib dependency; tests/test_data.c exercises it headless through
  * data.h. Simulated values are a pure function of the seed and the tick
- * count, so runs are reproducible.
+ * count, so runs are reproducible (only alert timestamps use the wall
+ * clock).
  */
 #include "data.h"
 
 #include <math.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 #define TWO_PI 6.28318530717958647692f
@@ -102,6 +106,70 @@ int ring_copy(const Ring *r, float *out)
     return r->count;
 }
 
+/* ------------------------------------------------------------- Alerts */
+
+/* Appends an alert to the circular log (overwriting the oldest when full).
+ * device is a device index or -1; source is the label shown in the log;
+ * fmt/... build the message (truncated to the buffer). Side effects:
+ * advances alert_head and alert_serial. The timestamp is back-dated by
+ * time_shift while the warm-up runs. */
+static void alert_add(Dataset *d, AlertSeverity sev, int device, const char *source, const char *fmt, ...)
+{
+    Alert *a = &d->alerts[d->alert_head];
+    memset(a, 0, sizeof *a);
+    a->serial = ++d->alert_serial;
+    a->tick = d->tick_count;
+    a->severity = sev;
+    a->when = time(NULL) - (time_t)d->time_shift;
+    a->device = device;
+    snprintf(a->source, sizeof a->source, "%s", source);
+
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(a->message, sizeof a->message, fmt, ap);
+    va_end(ap);
+
+    d->alert_head = (d->alert_head + 1) % ALERT_CAP;
+    if (d->alert_count < ALERT_CAP)
+        d->alert_count++;
+}
+
+/* Number of alerts currently in the log. */
+int data_alert_count(const Dataset *d)
+{
+    return d->alert_count;
+}
+
+/* Maps an age index (0 = newest) to the storage index in the circular
+ * array. The newest entry is at alert_head - 1. */
+static int alert_index(const Dataset *d, int i)
+{
+    int idx = (d->alert_head - 1 - i) % ALERT_CAP;
+    return idx < 0 ? idx + ALERT_CAP : idx;
+}
+
+/* Alert by age (0 = newest). i must be in [0, data_alert_count). */
+const Alert *data_alert(const Dataset *d, int i)
+{
+    return &d->alerts[alert_index(d, i)];
+}
+
+/* Flips the acknowledged flag of alert i; out-of-range indices are ignored. */
+void data_alert_toggle_ack(Dataset *d, int i)
+{
+    if (i < 0 || i >= d->alert_count)
+        return;
+    Alert *a = &d->alerts[alert_index(d, i)];
+    a->acknowledged = !a->acknowledged;
+}
+
+/* Marks every alert in the log as acknowledged. */
+void data_alert_ack_all(Dataset *d)
+{
+    for (int i = 0; i < d->alert_count; i++)
+        d->alerts[alert_index(d, i)].acknowledged = true;
+}
+
 /* ------------------------------------------------------------ Devices */
 
 /* Static description of one monitored device; copied into Device by
@@ -118,7 +186,8 @@ typedef struct {
 
 /* Device catalogue, one entry per DEVICE_COUNT slot. Servers, storage and
  * backup carry most of the traffic and burst more often, network gear is
- * light. At the mean load of 0.5 the aggregate is about 550 Mbps inbound. */
+ * light. At the mean load of 0.5 the aggregate is about 550 Mbps inbound,
+ * so the 85% utilisation alarm needs a coincident peak, not steady state. */
 static const DeviceSpec DEVICE_SPECS[DEVICE_COUNT] = {
     { "core-rtr-01", "10.0.0.1",    KIND_ROUTER,       6.0f,   4.0f,   4.0f, 0.005f },
     { "edge-fw-01",  "10.0.0.2",    KIND_FIREWALL,     9.0f,   6.0f,   6.0f, 0.005f },
@@ -147,6 +216,13 @@ const char *device_kind_name(DeviceKind k)
 const char *device_status_name(DeviceStatus s)
 {
     static const char *const names[] = { "Up", "Warning", "Down" };
+    return names[s];
+}
+
+/* Display name of an alert severity. */
+const char *alert_severity_name(AlertSeverity s)
+{
+    static const char *const names[] = { "Info", "Warning", "Critical" };
     return names[s];
 }
 
@@ -237,9 +313,29 @@ static DeviceStatus classify(const Device *dev)
     return STATUS_UP;
 }
 
+/* Logs an alert for a status change of device idx: DOWN -> critical,
+ * WARNING -> warning (message names the metric that tripped), recovery ->
+ * info. Side effect: appends to the alert log. */
+static void report_transition(Dataset *d, int idx, DeviceStatus from, DeviceStatus to)
+{
+    const Device *dev = &d->devices[idx];
+    if (to == STATUS_DOWN) {
+        alert_add(d, SEV_CRITICAL, idx, dev->name, "Host unreachable: ICMP timeout");
+    } else if (to == STATUS_WARNING) {
+        if (dev->latency_ms >= DEVICE_LATENCY_WARN_MS)
+            alert_add(d, SEV_WARNING, idx, dev->name, "High latency: %.0f ms", (double)dev->latency_ms);
+        else
+            alert_add(d, SEV_WARNING, idx, dev->name, "Packet loss: %.1f%%", (double)dev->loss_pct);
+    } else if (from == STATUS_DOWN) {
+        alert_add(d, SEV_INFO, idx, dev->name, "Host back online");
+    } else {
+        alert_add(d, SEV_INFO, idx, dev->name, "Metrics back to normal");
+    }
+}
+
 /* Advances one device by one tick and updates its measured values.
  * global_load is the shared traffic component for this tick. Side effects:
- * pushes latency history and updates the device status. */
+ * pushes latency history, may raise an alert on a status change. */
 static void device_step(Dataset *d, int idx, float global_load)
 {
     Device *dev = &d->devices[idx];
@@ -297,14 +393,53 @@ static void device_step(Dataset *d, int idx, float global_load)
 
     ring_push(&dev->latency_hist, dev->latency_ms);
 
-    /* 5. Status from the new values. */
-    dev->status = classify(dev);
+    /* 5. Status from the new values; log only actual changes. */
+    DeviceStatus next = classify(dev);
+    if (next != dev->status) {
+        DeviceStatus prev = dev->status;
+        dev->status = next;
+        report_transition(d, idx, prev, next);
+    }
 }
 
 /* -------------------------------------------------------- Simulation */
 
+/* Adds a harmless Info entry (backup done, poll finished, ...) so the log
+ * is not made of incidents only. Skipped when the picked device is DOWN,
+ * since an unreachable host cannot report anything. */
+static void emit_info_event(Dataset *d)
+{
+    static const char *const events[] = {
+        "Configuration backup completed",
+        "SNMP poll cycle finished",
+        "Firmware check: up to date",
+        "ARP table refreshed",
+        "NTP offset within tolerance",
+    };
+    int idx = (int)(rng_u32(d) % DEVICE_COUNT);
+    if (d->devices[idx].status == STATUS_DOWN)
+        return;
+    alert_add(d, SEV_INFO, idx, d->devices[idx].name, "%s", events[rng_u32(d) % (sizeof events / sizeof events[0])]);
+}
+
+/* Raises a warning when link utilisation passes 85% and an info when it
+ * falls below 75% again. The 10-point gap is the hysteresis that prevents
+ * a flood of alerts while the value hovers near the limit. The alert has
+ * no device (-1) and uses the source "wan-uplink". */
+static void check_utilization(Dataset *d, float in_mbps, float out_mbps)
+{
+    float util = fmaxf(in_mbps, out_mbps) / LINK_CAPACITY_MBPS;
+    if (!d->util_alarm && util > 0.85f) {
+        d->util_alarm = true;
+        alert_add(d, SEV_WARNING, -1, "wan-uplink", "Link utilisation at %.0f%%", (double)(util * 100.0f));
+    } else if (d->util_alarm && util < 0.75f) {
+        d->util_alarm = false;
+        alert_add(d, SEV_INFO, -1, "wan-uplink", "Link utilisation back to %.0f%%", (double)(util * 100.0f));
+    }
+}
+
 /* Runs one simulation tick (SIM_TICK_S of simulated time): steps every
- * device and records the aggregate histories. */
+ * device, records the aggregate histories and raises link-level alerts. */
 static void sim_tick(Dataset *d)
 {
     /* 1. Advance the clock. sim_time is derived from the integer tick
@@ -341,11 +476,17 @@ static void sim_tick(Dataset *d)
     ring_push(&d->bw_out, out_total);
     ring_push(&d->net_latency, live ? lat_sum / (float)live : 0.0f);
     ring_push(&d->net_loss, live ? loss_sum / (float)live : 0.0f);
+
+    /* 5. Link alarm and a random info event (p = 0.012 per tick, about
+     * one every 42 s). */
+    check_utilization(d, in_total, out_total);
+    if (rng_unit(d) < 0.012f)
+        emit_info_event(d);
 }
 
-/* Resets the dataset and runs WARMUP_TICKS ticks so charts and gauges are
- * populated at the first frame. seed 0 is replaced because xorshift32
- * would stay at 0 forever. */
+/* Resets the dataset and runs WARMUP_TICKS ticks so charts, gauges and the
+ * alert log are populated at the first frame. seed 0 is replaced because
+ * xorshift32 would stay at 0 forever. */
 void data_init(Dataset *d, uint32_t seed)
 {
     /* 1. Clear and seed. */
@@ -360,9 +501,22 @@ void data_init(Dataset *d, uint32_t seed)
     ring_init(&d->net_latency, RING_CAP);
     ring_init(&d->net_loss, RING_CAP);
 
-    /* 3. Warm-up: run the simulation so every history ring is full. */
-    for (int i = 0; i < WARMUP_TICKS; i++)
+    /* 3. Warm-up. time_shift counts down the simulated seconds that are
+     * still to come, so alerts raised here appear spread over the last
+     * two minutes instead of all carrying the start-up time. */
+    for (int i = 0; i < WARMUP_TICKS; i++) {
+        d->time_shift = (float)(WARMUP_TICKS - i) * SIM_TICK_S;
         sim_tick(d);
+    }
+    d->time_shift = 0.0f;
+
+    /* 4. History from the warm-up is closed unless its device is still unhealthy. */
+    for (int i = 0; i < d->alert_count; i++) {
+        Alert *a = &d->alerts[alert_index(d, i)];
+        bool healthy = a->device < 0 || d->devices[a->device].status == STATUS_UP;
+        if (a->severity == SEV_INFO || healthy)
+            a->acknowledged = true;
+    }
 }
 
 /* Advances the simulation by dt seconds of real time. Time is
@@ -380,7 +534,8 @@ void data_update(Dataset *d, double dt)
 /* ----------------------------------------------------------- Queries */
 
 /* Fills out with the current snapshot: status counts, aggregate rates,
- * utilisation and averages over reachable devices. Read-only on d. */
+ * utilisation, averages over reachable devices and open alerts per
+ * severity. Read-only on d. */
 void data_summary(const Dataset *d, Summary *out)
 {
     memset(out, 0, sizeof *out);
@@ -407,4 +562,42 @@ void data_summary(const Dataset *d, Summary *out)
     out->utilization = fmaxf(out->in_mbps, out->out_mbps) / LINK_CAPACITY_MBPS;
     out->avg_latency_ms = live ? lat_sum / (float)live : 0.0f;
     out->avg_loss_pct = live ? loss_sum / (float)live : 0.0f;
+
+    for (int i = 0; i < d->alert_count; i++) {
+        const Alert *a = data_alert(d, i);
+        if (!a->acknowledged)
+            out->open_alerts[a->severity]++;
+    }
+}
+
+/* Writes the indices of the (up to) max busiest devices into out, ordered
+ * by rx+tx descending, and returns how many were written. Ties keep the
+ * lower device index first. O(DEVICE_COUNT * max) insertion into a
+ * bounded sorted list, no allocation. */
+int data_top_talkers(const Dataset *d, int *out, int max)
+{
+    int n = 0;
+    for (int i = 0; i < DEVICE_COUNT; i++) {
+        float rate = d->devices[i].rx_mbps + d->devices[i].tx_mbps;
+        /* Insertion into a descending list capped at max entries: scan up
+         * from the end to find the position. */
+        int pos = n < max ? n : max;
+        while (pos > 0) {
+            const Device *prev = &d->devices[out[pos - 1]];
+            if (prev->rx_mbps + prev->tx_mbps >= rate)
+                break;
+            pos--;
+        }
+        /* Slower than every kept entry and the list is full: drop it. */
+        if (pos >= max)
+            continue;
+        /* Shift the tail down one place; the last element falls off when full. */
+        int last = n < max ? n : max - 1;
+        for (int j = last; j > pos; j--)
+            out[j] = out[j - 1];
+        out[pos] = i;
+        if (n < max)
+            n++;
+    }
+    return n;
 }
