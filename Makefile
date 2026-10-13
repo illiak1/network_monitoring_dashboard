@@ -2,10 +2,10 @@
 #
 #   make                    build with Raylib fetched into third_party/ (needs git)
 #   make RAYLIB_SYSTEM=1    build against an installed Raylib
-#   make run | clean
+#   make run | test | clean
 #
 # Sections: configuration, flags, platform libraries, Raylib source,
-# application build, run, cleanup. Objects, dependency files and
+# application build, run, tests, cleanup. Objects, dependency files and
 # binaries go to build/. CMakeLists.txt is the alternative build.
 
 # ---- Configuration ----
@@ -61,7 +61,7 @@ else
     LDFLAGS    += -L$(RAYLIB_DIR)/src
 endif
 
-.PHONY: all run clean distclean
+.PHONY: all run test clean distclean
 
 # ---- Application build ----
 
@@ -97,6 +97,21 @@ $(RAYLIB_DIR)/src/libraylib.a: $(RAYLIB_DIR)/src/raylib.h
 # (see find_font in src/theme.c).
 run: $(APP)
 	cd $(BUILD) && ./$(APP_NAME)$(EXE)
+
+# ---- Tests ----
+
+# The simulation layer has no Raylib dependency and is tested headless.
+TEST_BIN := $(BUILD)/test_data$(EXE)
+
+# Build and run the tests.
+test: $(TEST_BIN)
+	./$(TEST_BIN)
+
+# The test binary compiles tests/test_data.c together with src/data.c only,
+# with debug info and AddressSanitizer/UndefinedBehaviorSanitizer, so
+# memory errors and undefined behaviour in the simulation fail the run.
+$(TEST_BIN): tests/test_data.c src/data.c src/data.h | $(BUILD)
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Wshadow -g -fsanitize=address,undefined -Isrc tests/test_data.c src/data.c -o $@ -lm
 
 # ---- Cleanup ----
 
