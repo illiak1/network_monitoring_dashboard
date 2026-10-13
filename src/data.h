@@ -1,17 +1,21 @@
-/* data.h - simulated network: devices and traffic history.
+/* data.h - simulated network: devices, traffic history, alert log.
  *
  * Raylib-free on purpose, so tests/test_data.c can run it headless.
  * Parts: Ring (fixed-size sample history), Device (generator state plus
- * measured values), Dataset (everything, advanced in fixed ticks by
- * data_update) and a read-only summary query. data.c implements it.
+ * measured values), Alert (circular log), Dataset (everything, advanced in
+ * fixed ticks by data_update) and read-only queries (summary, top talkers).
+ * data.c implements it.
  */
 #ifndef DATA_H
 #define DATA_H
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 
 #define DEVICE_COUNT 14            /* fleet size, matches DEVICE_SPECS in data.c */
 #define RING_CAP 240               /* samples per history: 240 x 0.5 s = 120 s (longest chart window) */
+#define ALERT_CAP 200              /* alert log entries; the oldest is overwritten when full */
 #define SIM_TICK_S 0.5f            /* simulation step in s (2 Hz), independent of frame rate */
 #define LINK_CAPACITY_MBPS 1000.0f /* uplink capacity per direction; basis of utilisation */
 
@@ -89,6 +93,22 @@ typedef struct {
     float fault_extra_loss; /* percentage points added at fault_level 1 */
 } Device;
 
+/* ---- Alerts ---- */
+
+/* Order matters: used as an array index (Summary.open_alerts, name table). */
+typedef enum { SEV_INFO, SEV_WARNING, SEV_CRITICAL, SEV_COUNT } AlertSeverity;
+
+typedef struct {
+    uint32_t serial;      /* monotonic id, stable identity for UI animation keys */
+    uint32_t tick;        /* tick_count at creation, used to detect fresh alerts */
+    AlertSeverity severity;
+    time_t when;          /* wall-clock time, back-dated for warm-up alerts */
+    int device;           /* index into Dataset.devices, -1 if not device-bound */
+    bool acknowledged;
+    char source[24];
+    char message[80];
+} Alert;
+
 /* ---- Aggregates ---- */
 
 /* Snapshot computed by data_summary. */
@@ -98,6 +118,7 @@ typedef struct {
     float utilization;    /* 0..1 of link capacity, max of both directions */
     float avg_latency_ms; /* over devices that are not DOWN */
     float avg_loss_pct;   /* over devices that are not DOWN */
+    int open_alerts[SEV_COUNT];  /* unacknowledged, per severity */
 } Summary;
 
 /* ---- Dataset ---- */
@@ -108,6 +129,7 @@ typedef struct {
     uint32_t tick_count;
     float tick_acc;       /* seconds since the last tick, [0, SIM_TICK_S) */
     double sim_time;      /* tick_count * SIM_TICK_S, in s */
+    float time_shift;     /* back-dates alerts raised during warm-up */
 
     Device devices[DEVICE_COUNT];
     Ring bw_in;           /* aggregate inbound Mbps per tick */
@@ -115,6 +137,11 @@ typedef struct {
     Ring net_latency;     /* network-average latency per tick */
     Ring net_loss;        /* network-average loss per tick */
 
+    Alert alerts[ALERT_CAP];  /* circular, newest at alert_head - 1 */
+    int alert_head;           /* next write position */
+    int alert_count;
+    uint32_t alert_serial;    /* last serial handed out */
+    bool util_alarm;          /* utilisation alert is currently raised (hysteresis) */
 } Dataset;
 
 /* ---- Simulation control ---- */
@@ -126,10 +153,23 @@ void data_update(Dataset *d, double dt);
 
 /* ---- Queries ---- */
 
-/* Fills out with counts, aggregate rates and averages. */
+/* Fills out with counts, aggregate rates, averages and open alerts. */
 void data_summary(const Dataset *d, Summary *out);
+/* Fills out[] with device indices sorted by rx+tx descending. Returns count. */
+int data_top_talkers(const Dataset *d, int *out, int max);
+
+/* Number of alerts in the log (<= ALERT_CAP). */
+int data_alert_count(const Dataset *d);
+/* i = 0 is the newest alert. */
+const Alert *data_alert(const Dataset *d, int i);
+/* Flips the acknowledged flag of alert i (age index); out of range is ignored. */
+void data_alert_toggle_ack(Dataset *d, int i);
+/* Marks every alert in the log acknowledged. */
+void data_alert_ack_all(Dataset *d);
+
 /* Display names for the enums above. */
 const char *device_kind_name(DeviceKind k);
 const char *device_status_name(DeviceStatus s);
+const char *alert_severity_name(AlertSeverity s);
 
 #endif
