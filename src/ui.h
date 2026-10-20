@@ -2,10 +2,10 @@
  *
  * Widgets are plain function calls made every frame: they draw and return
  * the interaction result, with no retained widget tree. State that must
- * persist (hover and selection animations) lives in hashed
+ * persist (hover and selection animations, scroll offsets) lives in hashed
  * "slots" inside Ui, addressed by a 32-bit key. Parts: input snapshot and
- * frame lifecycle, slots, clip stack, rect-cutting layout, primitives, the
- * panel card and the tooltip. Implemented in ui.c on top of theme.h;
+ * frame lifecycle, slots, clip stack, rect-cutting layout, primitives and
+ * widgets, scroll view, tooltip. Implemented in ui.c on top of theme.h;
  * dashboard.c draws through it.
  */
 #ifndef UI_H
@@ -51,6 +51,8 @@ typedef struct {
 
     Vector2 mouse;       /* far off-screen when the cursor is outside the window */
     bool pressed;        /* left button went down this frame */
+    bool down;
+    float wheel;
     float dt;            /* frame time in s, capped at 50 ms */
     double time;
     uint32_t frame;      /* frame counter, drives slot eviction */
@@ -59,12 +61,27 @@ typedef struct {
     int clip_depth;
 
     UiSlot slots[UI_SLOT_COUNT];
+    uint32_t active;     /* key of the widget currently capturing a drag */
 
     bool cursor_hand;           /* a widget asked for the pointer cursor this frame */
     bool cursor_hand_applied;   /* cursor shape last sent to raylib */
     UiTooltip tip;
     float tip_alpha;     /* tooltip fade, 0..1 */
 } Ui;
+
+/* Vector icons drawn from line and triangle primitives. */
+typedef enum {
+    ICON_DASHBOARD,
+    ICON_DEVICES,
+    ICON_TRAFFIC,
+    ICON_ALERTS,
+    ICON_MENU,
+    ICON_PAUSE,
+    ICON_PLAY,
+    ICON_CHECK,
+    ICON_ARROW_UP,
+    ICON_ARROW_DOWN
+} IconId;
 
 /* ---- Lifecycle ---- */
 
@@ -121,6 +138,29 @@ Rectangle ui_panel(Ui *ui, Rectangle r, const char *title, uint32_t key);
 /* Header band of a panel (inside the side padding). Callers cut controls
  * off its right end; the title occupies the left. */
 Rectangle ui_panel_header(Rectangle panel);
+
+/* Pill-shaped filter button; tint colours the active state. True on click. */
+bool ui_chip(Ui *ui, uint32_t key, Rectangle r, const char *label, bool active, Color tint);
+/* Toggle with a colour dot, used as a legend. Returns true on click. */
+bool ui_legend_chip(Ui *ui, uint32_t key, Rectangle r, const char *label, Color color, bool active);
+/* Returns the selected index (changes on click). */
+int ui_segmented(Ui *ui, uint32_t key, Rectangle r, const char *const *labels, int n, int active);
+/* Text button; primary uses the accent fill. True on click. */
+bool ui_button(Ui *ui, uint32_t key, Rectangle r, const char *label, bool primary);
+/* Small status pill, and the width it needs for text. */
+void ui_badge(Ui *ui, Rectangle r, const char *text, Color color);
+float ui_badge_width(const Ui *ui, const char *text);
+/* Filled dot; with pulse, an expanding ring is drawn around it. */
+void ui_status_dot(Ui *ui, Vector2 c, float radius, Color color, bool pulse);
+/* Icon centred at c, size px wide. */
+void ui_icon(IconId id, Vector2 c, float size, Color color);
+
+/* ---- Scroll view ---- */
+
+/* Scrolling viewport. begin() returns the offset to subtract from content y. */
+float ui_scroll_begin(Ui *ui, uint32_t key, Rectangle view, float content_h);
+/* Ends the viewport and draws the scrollbar when content overflows. */
+void ui_scroll_end(Ui *ui, uint32_t key, Rectangle view, float content_h);
 
 /* ---- Tooltip ---- */
 

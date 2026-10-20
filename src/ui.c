@@ -2,8 +2,8 @@
  *
  * Sections: Lifecycle (per-frame input snapshot, tooltip drawing), Keys
  * and slots (hashed animation storage with LRU eviction), Clipping and
- * layout (scissor stack, rect cutting), Primitives, Widgets (panel card)
- * and Tooltip API.
+ * layout (scissor stack, rect cutting), Primitives, Widgets (panel, chip,
+ * segmented control, button, badge, icons), Scroll and Tooltip API.
  * Declared in ui.h; the widgets draw with the Theme bound in ui_init and
  * are called from dashboard.c. Interaction is resolved in the same call
  * that draws, using the input captured by ui_begin.
@@ -19,6 +19,7 @@
 /* Slots probed per lookup. A small window bounds the cost of a lookup and
  * limits which entries a new key may evict. */
 #define SLOT_PROBE 8
+#define SCROLL_STEP 56.0f   /* px scrolled per wheel notch */
 
 /* -------------------------------------------------------- Lifecycle */
 
@@ -42,6 +43,11 @@ void ui_begin(Ui *ui)
 
     ui->mouse = IsCursorOnScreen() ? GetMousePosition() : (Vector2){ -10000.0f, -10000.0f };
     ui->pressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    ui->down = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+    ui->wheel = GetMouseWheelMove();
+    /* A drag capture ends with the button release. */
+    if (!ui->down)
+        ui->active = 0;
 
     ui->clip_depth = 0;
     ui->cursor_hand = false;
@@ -239,7 +245,7 @@ void ui_clip_pop(Ui *ui)
 }
 
 /* True when the mouse is inside r and also inside the innermost clip
- * region, so clipped-away content cannot be hovered. */
+ * region, so content scrolled out of its viewport cannot be hovered. */
 bool ui_hover(const Ui *ui, Rectangle r)
 {
     if (!CheckCollisionPointRec(ui->mouse, r))
@@ -323,6 +329,12 @@ void ui_rect_outline(Rectangle r, float radius, float thickness, Color c)
         DrawRectangleRoundedLinesEx(r, roundness_for(r, radius), 10, thickness, c);
 }
 
+/* Top y that vertically centres a line of font f inside r. */
+static float text_top(const Ui *ui, FontId f, Rectangle r)
+{
+    return r.y + (r.height - ui->theme->font_px[f]) * 0.5f;
+}
+
 /* ----------------------------------------------------------- Widgets */
 
 /* Header band of a panel: inside the side padding, UI_PANEL_HEADER_H tall.
@@ -352,6 +364,288 @@ Rectangle ui_panel(Ui *ui, Rectangle r, const char *title, uint32_t key)
         ui_cut_top(&content, UI_PANEL_HEADER_H - UI_PANEL_PAD);
     }
     return content;
+}
+
+/* Pill-shaped toggle button. Two animation slots (key, key+1): hover and
+ * active. The active state tints fill, outline and text with `tint`.
+ * Returns true on the frame the button is clicked. */
+bool ui_chip(Ui *ui, uint32_t key, Rectangle r, const char *label, bool active, Color tint)
+{
+    const Palette *c = &ui->theme->c;
+    bool hot = ui_hot(ui, r);
+    float hv = ui_anim(ui, key, hot ? 1.0f : 0.0f, 16.0f);
+    float av = ui_anim(ui, ui_key_i(key, 1), active ? 1.0f : 0.0f, 14.0f);
+
+    Color fill = theme_mix(c->panel_raised, theme_mix(c->panel_raised, tint, 0.20f), av);
+    fill = theme_mix(fill, c->text, 0.05f * hv);
+    ui_rect(r, r.height * 0.5f, fill);
+    ui_rect_outline(r, r.height * 0.5f, 1.0f, theme_mix(c->border, theme_alpha(tint, 0.7f), av));
+
+    Color tc = theme_mix(theme_mix(c->text_dim, c->text, hv), tint, av);
+    float tw = theme_measure(ui->theme, FONT_SMALL, label).x;
+    theme_text(ui->theme, FONT_SMALL, label, r.x + (r.width - tw) * 0.5f, text_top(ui, FONT_SMALL, r), tc);
+    return hot && ui->pressed;
+}
+
+/* Chip with a leading colour dot, used as a legend entry. The dot is
+ * filled when active and shows a hollow ring when off, so the series
+ * colour stays recognisable. Returns true on click. */
+bool ui_legend_chip(Ui *ui, uint32_t key, Rectangle r, const char *label, Color color, bool active)
+{
+    const Palette *c = &ui->theme->c;
+    bool hot = ui_hot(ui, r);
+    float hv = ui_anim(ui, key, hot ? 1.0f : 0.0f, 16.0f);
+    float av = ui_anim(ui, ui_key_i(key, 1), active ? 1.0f : 0.0f, 14.0f);
+
+    ui_rect(r, r.height * 0.5f, theme_mix(c->panel_raised, c->border_strong, 0.5f * hv));
+    ui_rect_outline(r, r.height * 0.5f, 1.0f, theme_mix(c->border, c->border_strong, hv));
+
+    Vector2 dot = { r.x + 13.0f, r.y + r.height * 0.5f };
+    DrawCircleV(dot, 4.0f, theme_alpha(color, av));
+    DrawCircleLinesV(dot, 4.0f, theme_alpha(color, 0.5f + 0.5f * av));
+    theme_text(ui->theme, FONT_SMALL, label, r.x + 24.0f, text_top(ui, FONT_SMALL, r),
+               theme_mix(c->text_faint, theme_mix(c->text_dim, c->text, hv), av));
+    return hot && ui->pressed;
+}
+
+/* Segmented control with n equal segments. A thumb slides to the active
+ * segment (rate 20); slots: key for the thumb, key+1+i for hover of
+ * segment i. Returns the active index, updated on click. */
+int ui_segmented(Ui *ui, uint32_t key, Rectangle r, const char *const *labels, int n, int active)
+{
+    const Palette *c = &ui->theme->c;
+    const float inset = 2.0f;
+    float seg_w = (r.width - 2.0f * inset) / (float)n;
+
+    ui_rect(r, RADIUS_SM + 1, c->bg);
+    ui_rect_outline(r, RADIUS_SM + 1, 1.0f, c->border);
+
+    float tx = ui_anim(ui, key, (float)active * seg_w, 20.0f);
+    Rectangle thumb = { r.x + inset + tx, r.y + inset, seg_w, r.height - 2.0f * inset };
+    ui_rect(thumb, RADIUS_SM - 1, c->panel_raised);
+    ui_rect_outline(thumb, RADIUS_SM - 1, 1.0f, c->border_strong);
+
+    int result = active;
+    for (int i = 0; i < n; i++) {
+        Rectangle s = { r.x + inset + seg_w * (float)i, r.y + inset, seg_w, r.height - 2.0f * inset };
+        bool hot = ui_hot(ui, s);
+        float hv = ui_anim(ui, ui_key_i(key, (uint32_t)i + 1), hot ? 1.0f : 0.0f, 16.0f);
+        Color tc = i == active ? c->text : theme_mix(c->text_dim, c->text, hv);
+        float tw = theme_measure(ui->theme, FONT_SMALL, labels[i]).x;
+        theme_text(ui->theme, FONT_SMALL, labels[i], s.x + (s.width - tw) * 0.5f, text_top(ui, FONT_SMALL, s), tc);
+        if (hot && ui->pressed)
+            result = i;
+    }
+    return result;
+}
+
+/* Text button: primary uses the accent fill with dark text, secondary a
+ * raised surface with an outline. Returns true on click. */
+bool ui_button(Ui *ui, uint32_t key, Rectangle r, const char *label, bool primary)
+{
+    const Palette *c = &ui->theme->c;
+    bool hot = ui_hot(ui, r);
+    float hv = ui_anim(ui, key, hot ? 1.0f : 0.0f, 16.0f);
+
+    Color fill = primary ? theme_mix(c->accent, WHITE, 0.14f * hv) : theme_mix(c->panel_raised, c->border_strong, hv);
+    Color tc = primary ? c->bg : c->text;
+    ui_rect(r, RADIUS_SM + 1, fill);
+    if (!primary)
+        ui_rect_outline(r, RADIUS_SM + 1, 1.0f, theme_mix(c->border_strong, c->text_faint, hv));
+
+    float tw = theme_measure(ui->theme, FONT_BODY_BOLD, label).x;
+    theme_text(ui->theme, FONT_BODY_BOLD, label, r.x + (r.width - tw) * 0.5f, text_top(ui, FONT_BODY_BOLD, r), tc);
+    return hot && ui->pressed;
+}
+
+/* Width in px a badge needs for text: text width plus 7 px padding per side. */
+float ui_badge_width(const Ui *ui, const char *text)
+{
+    return theme_measure(ui->theme, FONT_CAPTION_BOLD, text).x + 14.0f;
+}
+
+/* Pill with a 14%-alpha tint of `color` and the text in full colour,
+ * centred in r. */
+void ui_badge(Ui *ui, Rectangle r, const char *text, Color color)
+{
+    ui_rect(r, r.height * 0.5f, theme_alpha(color, 0.14f));
+    float tw = theme_measure(ui->theme, FONT_CAPTION_BOLD, text).x;
+    theme_text(ui->theme, FONT_CAPTION_BOLD, text, r.x + (r.width - tw) * 0.5f, text_top(ui, FONT_CAPTION_BOLD, r), color);
+}
+
+/* Filled dot centred at c. With pulse, a ring expands from the dot once
+ * every ~1.1 s (0.9 Hz) to 2.8 x radius while fading from 35% to 0. */
+void ui_status_dot(Ui *ui, Vector2 c, float radius, Color color, bool pulse)
+{
+    if (pulse) {
+        float phase = (float)fmod(ui->time * 0.9, 1.0);
+        DrawCircleV(c, radius + phase * radius * 1.8f, theme_alpha(color, 0.35f * (1.0f - phase)));
+    }
+    DrawCircleV(c, radius, color);
+}
+
+/* Draws an icon centred at c, fitted in a square of `size` px, as lines
+ * and triangles (no textures). s is the half size; coordinates below are
+ * fractions of s tuned by eye. th is the stroke width. */
+void ui_icon(IconId id, Vector2 c, float size, Color color)
+{
+    const float th = 1.7f;
+    const float s = size * 0.5f;
+
+    switch (id) {
+    case ICON_DASHBOARD: {
+        /* 2 x 2 grid of outlined cells. */
+        float cell = s * 0.88f, gap = s * 0.24f;
+        for (int iy = 0; iy < 2; iy++) {
+            for (int ix = 0; ix < 2; ix++) {
+                Rectangle q = { c.x - s + (float)ix * (cell + gap) + gap * 0.5f,
+                                c.y - s + (float)iy * (cell + gap) + gap * 0.5f, cell, cell };
+                ui_rect_outline(q, 2.0f, th, color);
+            }
+        }
+        break;
+    }
+    case ICON_DEVICES: {
+        /* Monitor: screen outline, stand and base. */
+        Rectangle m = { c.x - s, c.y - s * 0.85f, s * 2.0f, s * 1.35f };
+        ui_rect_outline(m, 2.5f, th, color);
+        DrawLineEx((Vector2){ c.x, c.y + s * 0.5f }, (Vector2){ c.x, c.y + s * 0.9f }, th, color);
+        DrawLineEx((Vector2){ c.x - s * 0.5f, c.y + s * 0.92f }, (Vector2){ c.x + s * 0.5f, c.y + s * 0.92f }, th, color);
+        break;
+    }
+    case ICON_TRAFFIC: {
+        /* Zigzag line with dots on the inner vertices. */
+        Vector2 p[5] = {
+            { c.x - s, c.y + s * 0.35f }, { c.x - s * 0.4f, c.y - s * 0.25f },
+            { c.x + s * 0.05f, c.y + s * 0.2f }, { c.x + s * 0.6f, c.y - s * 0.7f },
+            { c.x + s, c.y - s * 0.15f },
+        };
+        for (int i = 0; i < 4; i++)
+            DrawLineEx(p[i], p[i + 1], th, color);
+        for (int i = 1; i < 4; i++)
+            DrawCircleV(p[i], th * 0.5f, color);
+        break;
+    }
+    case ICON_ALERTS: {
+        /* Warning triangle with an exclamation mark. */
+        Vector2 a = { c.x, c.y - s * 0.95f }, b = { c.x - s * 1.05f, c.y + s * 0.8f }, d = { c.x + s * 1.05f, c.y + s * 0.8f };
+        DrawLineEx(a, b, th, color);
+        DrawLineEx(b, d, th, color);
+        DrawLineEx(d, a, th, color);
+        DrawLineEx((Vector2){ c.x, c.y - s * 0.3f }, (Vector2){ c.x, c.y + s * 0.25f }, th, color);
+        DrawCircleV((Vector2){ c.x, c.y + s * 0.55f }, th * 0.65f, color);
+        break;
+    }
+    case ICON_MENU:
+        /* Three horizontal bars. */
+        for (int i = -1; i <= 1; i++)
+            DrawLineEx((Vector2){ c.x - s * 0.9f, c.y + (float)i * s * 0.6f }, (Vector2){ c.x + s * 0.9f, c.y + (float)i * s * 0.6f }, th, color);
+        break;
+    case ICON_PAUSE:
+        ui_rect((Rectangle){ c.x - s * 0.55f, c.y - s * 0.7f, s * 0.42f, s * 1.4f }, 1.5f, color);
+        ui_rect((Rectangle){ c.x + s * 0.13f, c.y - s * 0.7f, s * 0.42f, s * 1.4f }, 1.5f, color);
+        break;
+    case ICON_PLAY:
+        DrawTriangle((Vector2){ c.x - s * 0.5f, c.y - s * 0.75f }, (Vector2){ c.x - s * 0.5f, c.y + s * 0.75f },
+                     (Vector2){ c.x + s * 0.75f, c.y }, color);
+        break;
+    case ICON_CHECK:
+        DrawLineEx((Vector2){ c.x - s * 0.7f, c.y }, (Vector2){ c.x - s * 0.2f, c.y + s * 0.5f }, th, color);
+        DrawLineEx((Vector2){ c.x - s * 0.2f, c.y + s * 0.5f }, (Vector2){ c.x + s * 0.75f, c.y - s * 0.5f }, th, color);
+        break;
+    case ICON_ARROW_UP:
+        DrawTriangle((Vector2){ c.x, c.y - s * 0.6f }, (Vector2){ c.x - s * 0.7f, c.y + s * 0.5f },
+                     (Vector2){ c.x + s * 0.7f, c.y + s * 0.5f }, color);
+        break;
+    case ICON_ARROW_DOWN:
+        DrawTriangle((Vector2){ c.x - s * 0.7f, c.y - s * 0.5f }, (Vector2){ c.x, c.y + s * 0.6f },
+                     (Vector2){ c.x + s * 0.7f, c.y - s * 0.5f }, color);
+        break;
+    }
+}
+
+/* ------------------------------------------------------------ Scroll */
+
+/* Scrollbar thumb rectangle for a view showing a window of content_h at
+ * the given offset. The track is inset 4 px top and bottom; thumb length
+ * is proportional to the visible fraction with a 28 px minimum so it
+ * stays grabbable. */
+static Rectangle scroll_thumb(Rectangle view, float content_h, float offset)
+{
+    float max_off = content_h - view.height;
+    float track_h = view.height - 8.0f;
+    float thumb_h = fmaxf(28.0f, track_h * view.height / content_h);
+    float t = max_off > 0.0f ? offset / max_off : 0.0f;
+    return (Rectangle){ view.x + view.width - 7.0f, view.y + 4.0f + t * (track_h - thumb_h), 4.0f, thumb_h };
+}
+
+/* Starts a scrolling viewport: handles wheel and scrollbar drag, eases the
+ * displayed offset toward the target and pushes a clip region. Returns
+ * the whole-pixel offset to subtract from content y. key owns three
+ * slots: target offset, displayed offset and drag grab position. Must be
+ * paired with ui_scroll_end using the same arguments. */
+float ui_scroll_begin(Ui *ui, uint32_t key, Rectangle view, float content_h)
+{
+    float max_off = fmaxf(0.0f, content_h - view.height);
+    float *target = ui_slot(ui, key, NULL);
+    float *shown = ui_slot(ui, ui_key_i(key, 1), NULL);
+    float *grab = ui_slot(ui, ui_key_i(key, 2), NULL);
+
+    /* 1. Wheel, unless another widget is capturing a drag. */
+    if (ui->active == 0 && ui_hover(ui, view) && ui->wheel != 0.0f)
+        *target -= ui->wheel * SCROLL_STEP;
+
+    /* 2. Scrollbar drag. The hit area is 8 px wider on each side than the
+     * thumb. Pressing on the thumb keeps the grab point; pressing the
+     * track centres the thumb under the cursor. While dragging, the
+     * offset follows the mouse directly (no easing lag). */
+    if (max_off > 0.0f) {
+        Rectangle thumb = scroll_thumb(view, content_h, *shown);
+        Rectangle hit = { thumb.x - 8.0f, view.y, thumb.width + 16.0f, view.height };
+        if (ui->pressed && ui_hover(ui, hit) && ui->active == 0) {
+            ui->active = key;
+            *grab = CheckCollisionPointRec(ui->mouse, (Rectangle){ hit.x, thumb.y, hit.width, thumb.height })
+                  ? ui->mouse.y - thumb.y : thumb.height * 0.5f;
+        }
+        if (ui->active == key && ui->down) {
+            float track_h = view.height - 8.0f;
+            float span = track_h - thumb.height;
+            float t = span > 0.0f ? (ui->mouse.y - *grab - (view.y + 4.0f)) / span : 0.0f;
+            *target = anim_clamp01(t) * max_off;
+            *shown = *target;
+        }
+    }
+
+    /* 3. Clamp, ease (rate 20) and snap the last 0.1 px so the motion
+     * ends instead of creeping. */
+    *target = fminf(fmaxf(*target, 0.0f), max_off);
+    *shown = anim_approach(*shown, *target, 20.0f, ui->dt);
+    if (fabsf(*shown - *target) < 0.1f)
+        *shown = *target;
+
+    /* 4. Clip content to the view; floor keeps rows on whole pixels. */
+    ui_clip_push(ui, view);
+    return floorf(*shown);
+}
+
+/* Ends the viewport started by ui_scroll_begin: pops the clip and draws
+ * the scrollbar thumb when the content is taller than the view. The thumb
+ * widens slightly while hovered or dragged. */
+void ui_scroll_end(Ui *ui, uint32_t key, Rectangle view, float content_h)
+{
+    ui_clip_pop(ui);
+    if (content_h <= view.height)
+        return;
+
+    const Palette *c = &ui->theme->c;
+    float shown = *ui_slot(ui, ui_key_i(key, 1), NULL);
+    Rectangle thumb = scroll_thumb(view, content_h, shown);
+    Rectangle hit = { thumb.x - 8.0f, view.y, thumb.width + 16.0f, view.height };
+    bool engaged = ui->active == key || ui_hover(ui, hit);
+    float a = ui_anim(ui, ui_key_i(key, 3), engaged ? 1.0f : 0.0f, 14.0f);
+    thumb.x -= a * 1.0f;
+    thumb.width += a * 2.0f;
+    ui_rect(thumb, thumb.width * 0.5f, theme_mix(c->border_strong, c->text_faint, a));
 }
 
 /* ----------------------------------------------------------- Tooltip */
