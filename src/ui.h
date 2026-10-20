@@ -141,7 +141,7 @@ Rectangle ui_panel_header(Rectangle panel);
 
 /* Pill-shaped filter button; tint colours the active state. True on click. */
 bool ui_chip(Ui *ui, uint32_t key, Rectangle r, const char *label, bool active, Color tint);
-/* Toggle with a colour dot, used as a legend. Returns true on click. */
+/* Toggle with a colour dot, used as chart legend. Returns true on click. */
 bool ui_legend_chip(Ui *ui, uint32_t key, Rectangle r, const char *label, Color color, bool active);
 /* Returns the selected index (changes on click). */
 int ui_segmented(Ui *ui, uint32_t key, Rectangle r, const char *const *labels, int n, int active);

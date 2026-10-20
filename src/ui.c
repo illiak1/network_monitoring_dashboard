@@ -387,7 +387,7 @@ bool ui_chip(Ui *ui, uint32_t key, Rectangle r, const char *label, bool active, 
     return hot && ui->pressed;
 }
 
-/* Chip with a leading colour dot, used as a legend entry. The dot is
+/* Chip with a leading colour dot, used as a chart legend entry. The dot is
  * filled when active and shows a hollow ring when off, so the series
  * colour stays recognisable. Returns true on click. */
 bool ui_legend_chip(Ui *ui, uint32_t key, Rectangle r, const char *label, Color color, bool active)
