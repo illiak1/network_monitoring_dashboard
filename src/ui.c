@@ -5,8 +5,9 @@
  * layout (scissor stack, rect cutting), Primitives, Widgets (panel, chip,
  * segmented control, button, badge, icons), Scroll and Tooltip API.
  * Declared in ui.h; the widgets draw with the Theme bound in ui_init and
- * are called from panels.c and the page files. Interaction is resolved in the same call
- * that draws, using the input captured by ui_begin.
+ * are called from shell.c, panels.c and the page files. Interaction is
+ * resolved in the same call that draws, using the input captured by
+ * ui_begin.
  */
 #include "ui.h"
 

@@ -1,9 +1,10 @@
-/* pages.h - entry point of the Overview page.
+/* pages.h - entry points of the dashboard pages.
  *
- * dashboard_frame (dashboard.c) calls page_overview with the content
- * rectangle (the window inset by a margin). The page only arranges panels
- * inside that area; the shared cards are in panels.h. Implemented in
- * page_overview.c.
+ * dashboard_frame (dashboard.c) calls the function of the active page with
+ * the content rectangle (right of the sidebar, below the header). Each
+ * page only arranges panels and page-specific widgets inside that area;
+ * the shared cards are in panels.h. One implementation file per page:
+ * page_overview.c, page_traffic.c.
  */
 #ifndef PAGES_H
 #define PAGES_H
@@ -11,5 +12,6 @@
 #include "dashboard.h"
 
 void page_overview(Dashboard *d, Rectangle area);
+void page_traffic(Dashboard *d, Rectangle area);
 
 #endif

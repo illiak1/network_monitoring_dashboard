@@ -4,7 +4,7 @@
  * with sparklines) and Top talkers (animated bars). Each panel_* function
  * draws one titled card with ui_panel, reads Dashboard state, and handles
  * its own hover, tooltip and click. Declared in panels.h; composed into
- * pages by page_overview.c.
+ * pages by page_overview.c and page_traffic.c.
  */
 #include "panels.h"
 

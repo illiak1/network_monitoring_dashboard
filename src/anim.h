@@ -2,8 +2,9 @@
  *
  * Header-only (static inline), so any module can animate a value without
  * a link dependency. Used by ui.c (animation slots, scrolling), charts.c
- * (axis, bar and gauge-zone blending) and the page/panel code (layout
- * clamps). Functions are pure: time enters only through the dt argument.
+ * (axis, bar and gauge-zone blending), dashboard.c (sidebar width, page
+ * fade) and the page/panel code (layout clamps). Functions are pure: time
+ * enters only through the dt argument.
  */
 #ifndef ANIM_H
 #define ANIM_H
@@ -41,6 +42,14 @@ static inline float anim_smoothstep(float x)
 {
     x = anim_clamp01(x);
     return x * x * (3.0f - 2.0f * x);
+}
+
+/* Ease-out cubic 1 - (1 - x)^3 on [0, 1]: fast start, slow settle.
+ * Used for the page fade-in. Input is clamped. */
+static inline float anim_ease_out_cubic(float x)
+{
+    float k = 1.0f - anim_clamp01(x);
+    return 1.0f - k * k * k;
 }
 
 #endif

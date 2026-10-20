@@ -1,18 +1,20 @@
 /* dashboard.c - application state handling and the per-frame pipeline.
  *
- * Sections: formatting and colour helpers, init/shutdown and dashboard_frame
- * (input -> simulation -> page -> tooltip). The Overview page is in
- * page_overview.c, shared cards in panels.c. Called once per frame from
- * main.c.
+ * Sections: formatting and colour helpers, init/shutdown, navigation,
+ * keyboard shortcuts and layout state, and dashboard_frame (input ->
+ * simulation -> page -> shell -> tooltip). Pages are in page_*.c,
+ * sidebar and header in shell.c, shared cards in panels.c. Called once
+ * per frame from main.c.
  */
 #include "dashboard.h"
 
 #include <stdio.h>
 #include <string.h>
 
+#include "anim.h"
 #include "pages.h"
 
-#define CONTENT_PAD 20   /* margin around the page content, px */
+#define CONTENT_PAD 20   /* margin between the shell and page content, px */
 
 /* Bandwidth window in seconds per range index; RANGE_LABELS are the
  * matching button captions. 120 s equals the history length (RING_CAP). */
@@ -74,6 +76,9 @@ void dashboard_init(Dashboard *d)
     ui_init(&d->ui, &d->theme);
     data_init(&d->data, (uint32_t)time(NULL) ^ 0xA5F1C3D7u);
 
+    d->page = PAGE_OVERVIEW;
+    d->page_t = 1.0f;
+    d->sidebar_w = SIDEBAR_W;
     d->range_idx = 1;
     d->series_on[0] = d->series_on[1] = true;
 }
@@ -84,18 +89,65 @@ void dashboard_shutdown(Dashboard *d)
     theme_unload(&d->theme);
 }
 
+/* ---------------------------------------------------------- Navigation */
+
+/* Switches to page and restarts the fade-in (page_t = 0). Re-selecting
+ * the current page does nothing. */
+void dashboard_navigate(Dashboard *d, Page page)
+{
+    if (page == d->page)
+        return;
+    d->page = page;
+    d->page_t = 0.0f;
+}
+
+/* ------------------------------------------------- Input, layout state */
+
+/* Global shortcuts: 1-2 pages, Space pause, B sidebar, F11 borderless. */
+static void handle_keys(Dashboard *d)
+{
+    static const int page_keys[PAGE_COUNT] = { KEY_ONE, KEY_TWO };
+    for (int i = 0; i < PAGE_COUNT; i++) {
+        if (IsKeyPressed(page_keys[i]))
+            dashboard_navigate(d, (Page)i);
+    }
+    if (IsKeyPressed(KEY_SPACE))
+        d->paused = !d->paused;
+    if (IsKeyPressed(KEY_B))
+        d->sidebar_collapsed = !d->sidebar_collapsed;
+    if (IsKeyPressed(KEY_F11))
+        ToggleBorderlessWindowed();
+}
+
+/* Advances the animated layout values by one frame: sidebar width toward
+ * its expanded/collapsed target (rate 16, collapsed also when the window
+ * is narrower than SIDEBAR_AUTO_COLLAPSE_BELOW) and the page fade-in
+ * (rate 6 per s, so a transition takes ~170 ms). The width is rounded to
+ * whole pixels because it positions text and borders. */
+static void update_layout_state(Dashboard *d, float screen_w)
+{
+    bool collapsed = d->sidebar_collapsed || screen_w < SIDEBAR_AUTO_COLLAPSE_BELOW;
+    float target = collapsed ? SIDEBAR_COLLAPSED_W : SIDEBAR_W;
+    d->sidebar_w = anim_approach(d->sidebar_w, target, 16.0f, d->ui.dt);
+    if (fabsf(d->sidebar_w - target) < 0.5f)
+        d->sidebar_w = target;
+    d->sidebar_w = floorf(d->sidebar_w + 0.5f);
+
+    d->page_t = fminf(1.0f, d->page_t + d->ui.dt * 6.0f);
+}
+
 /* ----------------------------------------------------------- Frame */
 
 /* Runs one complete frame inside BeginDrawing/EndDrawing. */
 void dashboard_frame(Dashboard *d)
 {
     Ui *ui = &d->ui;
+    const Palette *c = &d->theme.c;
 
-    /* 1. Input snapshot, shortcut, simulation. Space toggles the pause
-     * flag; the summary is refreshed even while paused. */
+    /* 1. Input snapshot, shortcuts, simulation. The summary is refreshed
+     * even while paused so UI interaction (acknowledging alerts) shows. */
     ui_begin(ui);
-    if (IsKeyPressed(KEY_SPACE))
-        d->paused = !d->paused;
+    handle_keys(d);
     if (!d->paused)
         data_update(&d->data, ui->dt);
     data_summary(&d->data, &d->summary);
@@ -106,11 +158,32 @@ void dashboard_frame(Dashboard *d)
         ui_end(ui);
         return;
     }
+    update_layout_state(d, sw);
 
-    /* 3. Overview page on the whole window, inset by CONTENT_PAD. */
-    ClearBackground(d->theme.c.bg);
-    page_overview(d, (Rectangle){ CONTENT_PAD, CONTENT_PAD, sw - 2.0f * CONTENT_PAD, sh - 2.0f * CONTENT_PAD });
+    /* 3. Content rectangle: right of the sidebar and below the header,
+     * inset by CONTENT_PAD on the left, right and bottom and by 4 px at
+     * the top. */
+    ClearBackground(c->bg);
 
-    /* 4. Tooltip on top of everything (ui_end). */
+    Rectangle body = { d->sidebar_w, HEADER_H, sw - d->sidebar_w, sh - HEADER_H };
+    Rectangle content = { body.x + CONTENT_PAD, body.y + 4.0f, body.width - 2.0f * CONTENT_PAD, body.height - CONTENT_PAD - 4.0f };
+
+    /* 4. Active page. */
+    switch (d->page) {
+    case PAGE_OVERVIEW: page_overview(d, content); break;
+    case PAGE_TRAFFIC:  page_traffic(d, content); break;
+    default: break;
+    }
+
+    /* 5. Page fade-in: a background-coloured veil over the body that
+     * becomes transparent (ease-out), drawn before the shell so sidebar
+     * and header are not dimmed. */
+    if (d->page_t < 1.0f)
+        DrawRectangleRec(body, theme_alpha(c->bg, 1.0f - anim_ease_out_cubic(d->page_t)));
+
+    /* 6. Shell, then the tooltip on top of everything (ui_end). */
+    shell_draw_sidebar(d, (Rectangle){ 0.0f, 0.0f, d->sidebar_w, sh });
+    shell_draw_header(d, (Rectangle){ d->sidebar_w, 0.0f, sw - d->sidebar_w, HEADER_H });
+
     ui_end(ui);
 }

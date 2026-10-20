@@ -3,7 +3,7 @@
  * Sections: font table (role -> file and size), palette (dark theme
  * colours), font loading (asset lookup with default-font fallback) and
  * colour/text helpers. Declared in theme.h; the Theme built here is owned
- * by Dashboard and read by ui.c, charts.c, panels.c and pages.
+ * by Dashboard and read by ui.c, charts.c, shell.c, panels.c and pages.
  */
 #include "theme.h"
 
