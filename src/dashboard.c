@@ -1,14 +1,15 @@
 /* dashboard.c - application state handling and the per-frame pipeline.
  *
  * Sections: formatting and colour helpers, init/shutdown, the basic page and
- * dashboard_frame (input -> simulation -> page). Everything is drawn with
- * the theme text helpers. Called once per frame from main.c.
+ * dashboard_frame (input -> simulation -> page -> tooltip). The page is
+ * drawn with the ui.h widgets. Called once per frame from main.c.
  */
 #include "dashboard.h"
 
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
+
+#define CONTENT_PAD 20   /* margin around the page content, px */
 
 /* ------------------------------------------------------------ Helpers */
 
@@ -55,13 +56,14 @@ void format_clock(char *buf, size_t cap, time_t t)
 
 /* ------------------------------------------------------ Init, shutdown */
 
-/* Initialises all state: loads fonts (needs the GL context) and seeds the
- * simulation from the clock (a different run every second; the XOR
- * constant only scrambles the bits). */
+/* Initialises all state: loads fonts (needs the GL context), binds the UI
+ * toolkit to the theme and seeds the simulation from the clock (a
+ * different run every second; the XOR constant only scrambles the bits). */
 void dashboard_init(Dashboard *d)
 {
     memset(d, 0, sizeof *d);
     theme_load(&d->theme);
+    ui_init(&d->ui, &d->theme);
     data_init(&d->data, (uint32_t)time(NULL) ^ 0xA5F1C3D7u);
 }
 
@@ -73,55 +75,76 @@ void dashboard_shutdown(Dashboard *d)
 
 /* ---------------------------------------------------------- Basic page */
 
-/* Draws the basic page with the theme text helpers: title, one summary
- * line, the device list (status dot, name, address, latency) on the left
- * and the newest alerts on the right. */
-static void draw_basic_page(Dashboard *d)
+/* Row pitch of both lists on the basic page, px. */
+#define BASIC_ROW_H 26.0f
+
+/* Draws the basic page inside area a with ui.h widgets: title and summary
+ * line, a "Devices" card with one row per device (hover highlight and
+ * tooltip) and a "Recent alerts" card with the newest alerts. */
+static void draw_basic_page(Dashboard *d, Rectangle a)
 {
+    Ui *ui = &d->ui;
     const Theme *t = &d->theme;
     const Palette *c = &t->c;
     const Summary *s = &d->summary;
     char buf[128], in[24], out[24];
 
     /* 1. Title and summary: device states and aggregate rates. */
-    theme_text(t, FONT_TITLE, "Network Monitoring Dashboard", 32.0f, 24.0f, c->text);
+    theme_text(t, FONT_TITLE, "Network Monitoring Dashboard", a.x, a.y, c->text);
     format_rate(in, sizeof in, s->in_mbps);
     format_rate(out, sizeof out, s->out_mbps);
     snprintf(buf, sizeof buf, "%d up   %d warning   %d down   in %s   out %s%s", s->up, s->warning, s->down, in, out,
              d->paused ? "   (paused)" : "");
-    theme_text(t, FONT_BODY, buf, 32.0f, 58.0f, c->text_dim);
+    theme_text(t, FONT_BODY, buf, a.x, a.y + 34.0f, c->text_dim);
+    ui_cut_top(&a, 68.0f);
 
-    /* 2. Device list, one 24 px line per device, dot coloured by status. */
-    theme_text(t, FONT_CAPTION_BOLD, "DEVICES", 32.0f, 94.0f, c->text_faint);
-    float y = 116.0f;
+    /* 2. Two cards: devices at a fixed 460 px, alerts take the rest. */
+    Rectangle devices = ui_cut_left(&a, 460.0f);
+    ui_cut_left(&a, SP_LG);
+    Rectangle content = ui_panel(ui, devices, "Devices", ui_key("basic_devices"));
+
+    /* 3. Device rows: hover wash (eased at rate 16), status dot, name,
+     * address and latency; hovering a row shows its metrics in a tooltip. */
     for (int i = 0; i < DEVICE_COUNT; i++) {
         const Device *dev = &d->data.devices[i];
-        DrawCircleV((Vector2){ 40.0f, y + 8.0f }, 4.0f, status_color(c, dev->status));
-        theme_text(t, FONT_BODY_BOLD, dev->name, 56.0f, y, c->text);
-        theme_text(t, FONT_MONO_SMALL, dev->ip, 190.0f, y + 1.0f, c->text_faint);
+        Rectangle row = { content.x, content.y + (float)i * BASIC_ROW_H, content.width, BASIC_ROW_H - 2.0f };
+        bool hot = ui_hover(ui, row);
+        float hv = ui_anim(ui, ui_key_i(ui_key("basic_row"), (uint32_t)i), hot ? 1.0f : 0.0f, 16.0f);
+        ui_rect(row, RADIUS_SM, theme_alpha(c->text, 0.055f * hv));
+
+        float ty = row.y + (row.height - t->font_px[FONT_BODY]) * 0.5f;
+        DrawCircleV((Vector2){ row.x + 12.0f, row.y + row.height * 0.5f }, 3.5f, status_color(c, dev->status));
+        theme_text(t, FONT_BODY_BOLD, dev->name, row.x + 28.0f, ty, c->text);
+        theme_text(t, FONT_MONO_SMALL, dev->ip, row.x + 160.0f, ty + 1.0f, c->text_faint);
         if (dev->status == STATUS_DOWN)
             snprintf(buf, sizeof buf, "down");
         else
             snprintf(buf, sizeof buf, "%.0f ms", (double)dev->latency_ms);
-        theme_text_right(t, FONT_MONO_SMALL, buf, 440.0f, y + 1.0f, dev->status == STATUS_DOWN ? c->crit : c->text_dim);
-        y += 24.0f;
+        theme_text_right(t, FONT_MONO_SMALL, buf, row.x + row.width - 8.0f, ty + 1.0f,
+                         dev->status == STATUS_DOWN ? c->crit : c->text_dim);
+
+        if (hot) {
+            ui_tip_begin(ui, dev->name);
+            ui_tip_row(ui, NULL, "Status", device_status_name(dev->status));
+            snprintf(buf, sizeof buf, "%.2f %%", (double)dev->loss_pct);
+            ui_tip_row(ui, NULL, "Packet loss", buf);
+            format_rate(buf, sizeof buf, dev->rx_mbps + dev->tx_mbps);
+            ui_tip_row(ui, NULL, "Traffic", buf);
+        }
     }
 
-    /* 3. Newest alerts: time, severity, source and message. The message
-     * is cut to the width left on the right of the 510 px start column. */
-    theme_text(t, FONT_CAPTION_BOLD, "RECENT ALERTS", 510.0f, 94.0f, c->text_faint);
-    int shown = data_alert_count(&d->data) < 12 ? data_alert_count(&d->data) : 12;
-    float msg_w = (float)GetScreenWidth() - 510.0f - 250.0f;
-    y = 116.0f;
+    /* 4. Alerts card: as many of the newest alerts as fit the height. */
+    content = ui_panel(ui, a, "Recent alerts", ui_key("basic_alerts"));
+    int fit = (int)(content.height / BASIC_ROW_H);
+    int shown = data_alert_count(&d->data) < fit ? data_alert_count(&d->data) : fit;
     for (int i = 0; i < shown; i++) {
-        const Alert *a = data_alert(&d->data, i);
-        Color sev = severity_color(c, a->severity);
-        format_clock(buf, sizeof buf, a->when);
-        theme_text(t, FONT_MONO_SMALL, buf, 510.0f, y + 1.0f, c->text_faint);
-        theme_text(t, FONT_CAPTION_BOLD, alert_severity_name(a->severity), 590.0f, y + 2.0f, sev);
-        theme_text(t, FONT_BODY_BOLD, a->source, 660.0f, y, c->text);
-        theme_text_fit(t, FONT_BODY, a->message, 760.0f, y, msg_w, c->text_dim);
-        y += 24.0f;
+        const Alert *al = data_alert(&d->data, i);
+        Color sev = severity_color(c, al->severity);
+        float y = content.y + (float)i * BASIC_ROW_H;
+        format_clock(buf, sizeof buf, al->when);
+        theme_text(t, FONT_MONO_SMALL, buf, content.x, y + 1.0f, c->text_faint);
+        theme_text(t, FONT_CAPTION_BOLD, alert_severity_name(al->severity), content.x + 74.0f, y + 2.0f, sev);
+        theme_text_fit(t, FONT_BODY, al->message, content.x + 148.0f, y, content.width - 148.0f, c->text_dim);
     }
 }
 
@@ -130,17 +153,28 @@ static void draw_basic_page(Dashboard *d)
 /* Runs one complete frame inside BeginDrawing/EndDrawing. */
 void dashboard_frame(Dashboard *d)
 {
-    /* 1. Input and simulation. Space toggles the pause flag; dt is capped
-     * at 50 ms so a stall (window drag, debugger) cannot run the simulation
-     * far ahead. The summary is refreshed even while paused. */
-    float dt = fminf(GetFrameTime(), 0.05f);
+    Ui *ui = &d->ui;
+
+    /* 1. Input snapshot, shortcut, simulation. Space toggles the pause
+     * flag; the summary is refreshed even while paused. */
+    ui_begin(ui);
     if (IsKeyPressed(KEY_SPACE))
         d->paused = !d->paused;
     if (!d->paused)
-        data_update(&d->data, (double)dt);
+        data_update(&d->data, ui->dt);
     data_summary(&d->data, &d->summary);
 
-    /* 2. Draw the basic page on the theme background. */
+    /* 2. A (nearly) minimised window has no usable area: skip drawing. */
+    float sw = (float)GetScreenWidth(), sh = (float)GetScreenHeight();
+    if (sw < 200.0f || sh < 200.0f) {
+        ui_end(ui);
+        return;
+    }
+
+    /* 3. Basic page on the whole window, inset by CONTENT_PAD. */
     ClearBackground(d->theme.c.bg);
-    draw_basic_page(d);
+    draw_basic_page(d, (Rectangle){ CONTENT_PAD, CONTENT_PAD, sw - 2.0f * CONTENT_PAD, sh - 2.0f * CONTENT_PAD });
+
+    /* 4. Tooltip on top of everything (ui_end). */
+    ui_end(ui);
 }

@@ -48,10 +48,12 @@ endif()
 add_library(netmon_data STATIC src/data.c)
 target_include_directories(netmon_data PUBLIC src)
 
-# The dashboard application: theme, plus the simulation library and Raylib.
+# The dashboard application: UI toolkit and theme, plus the simulation
+# library and Raylib.
 add_executable(netmon
     src/main.c
     src/dashboard.c
+    src/ui.c
     src/theme.c
 )
 target_link_libraries(netmon PRIVATE netmon_data raylib)

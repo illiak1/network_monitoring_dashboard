@@ -1,9 +1,9 @@
 /* theme.h - visual identity: palette, spacing scale, fonts and text helpers.
  *
-theme.c implements it. One Theme instance lives in Dashboard (dashboard.h)
- * and is passed by pointer to everything that draws, so all text and shapes
- * use the same colours and metrics. Text is always drawn through the
- * theme_text* helpers so glyph placement stays pixel-aligned.
+ * theme.c implements it. One Theme instance lives in Dashboard and is
+ * referenced (const) by Ui, so every widget in ui.c draws with the
+ * same colours and metrics. Text is always drawn through the theme_text*
+ * helpers so glyph placement stays pixel-aligned.
  */
 #ifndef THEME_H
 #define THEME_H

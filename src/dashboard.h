@@ -1,9 +1,10 @@
 /* dashboard.h - application state and shared helpers.
  *
- * Dashboard owns everything the program keeps between frames: Theme,
- * Dataset (simulation), the latest Summary and the pause flag. dashboard.c
- * runs the frame loop and draws the basic page; main.c only creates the
- * window and calls dashboard_frame.
+ * Dashboard owns everything the program keeps between frames: Theme, Ui
+ * (input and animation slots), Dataset (simulation), the latest Summary and
+ * the pause flag. dashboard.c runs the frame loop and draws the basic page
+ * with ui.h widgets; main.c only creates the window and calls
+ * dashboard_frame.
  */
 #ifndef DASHBOARD_H
 #define DASHBOARD_H
@@ -12,14 +13,16 @@
 #include <stddef.h>
 #include "data.h"
 #include "theme.h"
+#include "ui.h"
 
 /* Whole application state. Large, so main.c keeps it in static storage. */
 typedef struct {
     Theme theme;
+    Ui ui;
     Dataset data;
     Summary summary;           /* refreshed once per frame from data */
 
-    bool paused;               /* freezes the simulation */
+    bool paused;               /* freezes the simulation, UI stays live */
 } Dashboard;
 
 /* Loads the theme, seeds the simulation from the clock, sets the defaults. */
