@@ -6,7 +6,7 @@
  * "slots" inside Ui, addressed by a 32-bit key. Parts: input snapshot and
  * frame lifecycle, slots, clip stack, rect-cutting layout, primitives and
  * widgets, scroll view, tooltip. Implemented in ui.c on top of theme.h;
- * dashboard.c draws through it.
+ * every panel and page in the project draws through it.
  */
 #ifndef UI_H
 #define UI_H

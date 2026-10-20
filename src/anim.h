@@ -1,9 +1,9 @@
 /* anim.h - frame-rate independent smoothing and easing helpers.
  *
  * Header-only (static inline), so any module can animate a value without
- * a link dependency. Used by ui.c (animation slots, scrolling) and charts.c
- * (axis, bar and gauge-zone blending). Functions are pure: time enters only
- * through the dt argument.
+ * a link dependency. Used by ui.c (animation slots, scrolling), charts.c
+ * (axis, bar and gauge-zone blending) and the page/panel code (layout
+ * clamps). Functions are pure: time enters only through the dt argument.
  */
 #ifndef ANIM_H
 #define ANIM_H
@@ -21,6 +21,12 @@
 static inline float anim_approach(float current, float target, float rate, float dt)
 {
     return current + (target - current) * (1.0f - expf(-rate * dt));
+}
+
+/* Clamps x to [lo, hi]. */
+static inline float anim_clamp(float x, float lo, float hi)
+{
+    return x < lo ? lo : (x > hi ? hi : x);
 }
 
 /* Clamps x to [0, 1]. */

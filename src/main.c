@@ -8,7 +8,7 @@
 #include "raylib.h"
 
 /* Initial window size and the smallest size the resizable window may take
- * (the basic page layout is designed down to this size). */
+ * (the layouts in the page files are designed down to this size). */
 #define WINDOW_W 1280
 #define WINDOW_H 720
 #define MIN_W 960
