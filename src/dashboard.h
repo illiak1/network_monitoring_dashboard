@@ -91,7 +91,7 @@ void dashboard_open_device(Dashboard *d, int index);
 /* Palette colour for a device status / alert severity. */
 Color status_color(const Palette *c, DeviceStatus s);
 Color severity_color(const Palette *c, AlertSeverity s);
-/* "412 Mbps" or "1.24 Gbps". */
+/* "412 Mbps", "3.4 Mbps" or "1.24 Gbps". */
 void format_rate(char *buf, size_t cap, float mbps);
 /* Local time as HH:MM:SS. */
 void format_clock(char *buf, size_t cap, time_t t);

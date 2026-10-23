@@ -45,13 +45,17 @@ Color severity_color(const Palette *c, AlertSeverity s)
     }
 }
 
-/* Formats a rate for display: 2 decimals in Gbps, whole Mbps below 1000. */
+/* Formats a rate for display. Precision shrinks with magnitude: 2 decimals
+ * in Gbps, whole Mbps from 10, one decimal below 10 so small rates do
+ * not all read "0" or "3". */
 void format_rate(char *buf, size_t cap, float mbps)
 {
     if (mbps >= 1000.0f)
         snprintf(buf, cap, "%.2f Gbps", (double)(mbps / 1000.0f));
-    else
+    else if (mbps >= 10.0f)
         snprintf(buf, cap, "%.0f Mbps", (double)mbps);
+    else
+        snprintf(buf, cap, "%.1f Mbps", (double)mbps);
 }
 
 /* Formats t as local time HH:MM:SS; "--:--:--" if it cannot be converted. */
