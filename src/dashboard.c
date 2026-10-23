@@ -68,7 +68,9 @@ void format_clock(char *buf, size_t cap, time_t t)
 
 /* Initialises all state: loads fonts (needs the GL context), seeds the
  * simulation from the clock (a different run every second; the XOR
- * constant only scrambles the bits) and sets the view defaults. */
+ * constant only scrambles the bits) and sets the view defaults. Selected
+ * device 6 is web-01, a busy server, so the detail panel is populated on
+ * the first visit. */
 void dashboard_init(Dashboard *d)
 {
     memset(d, 0, sizeof *d);
@@ -81,6 +83,10 @@ void dashboard_init(Dashboard *d)
     d->sidebar_w = SIDEBAR_W;
     d->range_idx = 1;
     d->series_on[0] = d->series_on[1] = true;
+    d->selected_device = 6;
+    d->device_filter = FILTER_ALL;
+    d->sort_key = SORT_STATUS;
+    d->sort_desc = false;
 }
 
 /* Releases GPU resources owned by the dashboard. */
@@ -101,12 +107,29 @@ void dashboard_navigate(Dashboard *d, Page page)
     d->page_t = 0.0f;
 }
 
+/* Selects a device for the detail panel; -1 clears the selection. When
+ * the device changes, the detail chart axis is re-initialised so it snaps
+ * to the new device's scale instead of animating from the old one. */
+void dashboard_select_device(Dashboard *d, int index)
+{
+    if (index != d->selected_device)
+        d->chart_device.initialized = false;
+    d->selected_device = index;
+}
+
+/* Selects a device and switches to the Devices page. */
+void dashboard_open_device(Dashboard *d, int index)
+{
+    dashboard_select_device(d, index);
+    dashboard_navigate(d, PAGE_DEVICES);
+}
+
 /* ------------------------------------------------- Input, layout state */
 
-/* Global shortcuts: 1-2 pages, Space pause, B sidebar, F11 borderless. */
+/* Global shortcuts: 1-3 pages, Space pause, B sidebar, F11 borderless. */
 static void handle_keys(Dashboard *d)
 {
-    static const int page_keys[PAGE_COUNT] = { KEY_ONE, KEY_TWO };
+    static const int page_keys[PAGE_COUNT] = { KEY_ONE, KEY_TWO, KEY_THREE };
     for (int i = 0; i < PAGE_COUNT; i++) {
         if (IsKeyPressed(page_keys[i]))
             dashboard_navigate(d, (Page)i);
@@ -171,6 +194,7 @@ void dashboard_frame(Dashboard *d)
     /* 4. Active page. */
     switch (d->page) {
     case PAGE_OVERVIEW: page_overview(d, content); break;
+    case PAGE_DEVICES:  page_devices(d, content); break;
     case PAGE_TRAFFIC:  page_traffic(d, content); break;
     default: break;
     }

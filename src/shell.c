@@ -1,6 +1,6 @@
 /* shell.c - application chrome: sidebar navigation and top header.
  *
- * Sidebar: brand, two page buttons with an animated active indicator,
+ * Sidebar: brand, three page buttons with an animated active indicator,
  * collapse toggle, FPS/"simulated data" note. Header: page
  * title, summary statistics (dropped by priority when space runs out),
  * LIVE/PAUSED pill, pause button and clock. Both are drawn after the page
@@ -17,8 +17,8 @@
 #define NAV_ITEM_GAP 4.0f   /* vertical gap between buttons, px */
 
 /* Labels and icons indexed by Page. */
-static const char *const PAGE_NAMES[PAGE_COUNT] = { "Overview", "Traffic" };
-static const IconId PAGE_ICONS[PAGE_COUNT] = { ICON_DASHBOARD, ICON_TRAFFIC };
+static const char *const PAGE_NAMES[PAGE_COUNT] = { "Overview", "Devices", "Traffic" };
+static const IconId PAGE_ICONS[PAGE_COUNT] = { ICON_DASHBOARD, ICON_DEVICES, ICON_TRAFFIC };
 
 /* ----------------------------------------------------------- Sidebar */
 
@@ -171,11 +171,15 @@ static void build_stats(const Dashboard *d, HeaderStat stats[STAT_COUNT])
     }
 }
 
-/* Subtitle under the page title. Returns a string literal. */
-static const char *page_subtitle(const Dashboard *d)
+/* Subtitle under the page title. Returns a string literal, or buf when
+ * the text needs formatting (cap is its size). */
+static const char *page_subtitle(const Dashboard *d, char *buf, size_t cap)
 {
     switch (d->page) {
     case PAGE_OVERVIEW: return "Live network status at a glance";
+    case PAGE_DEVICES:
+        snprintf(buf, cap, "%d monitored devices", DEVICE_COUNT);
+        return buf;
     case PAGE_TRAFFIC: return "Bandwidth, utilisation and top talkers";
     default: return "";
     }
@@ -247,8 +251,9 @@ void shell_draw_header(Dashboard *d, Rectangle a)
 
     /* 5. Title and subtitle on the left; title_end is where the statistics
      * area begins (32 px breathing room). */
+    char sub[64];
     const char *title = PAGE_NAMES[d->page];
-    const char *subtitle = page_subtitle(d);
+    const char *subtitle = page_subtitle(d, sub, sizeof sub);
     theme_text(t, FONT_TITLE, title, left, 9.0f, c->text);
     theme_text(t, FONT_SMALL, subtitle, left, 38.0f, c->text_faint);
     float title_end = left + fmaxf(theme_measure(t, FONT_TITLE, title).x, theme_measure(t, FONT_SMALL, subtitle).x) + 32.0f;

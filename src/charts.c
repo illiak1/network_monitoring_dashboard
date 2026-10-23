@@ -4,9 +4,9 @@
  * hover), Gauge (zone colour, 270-degree arc), Bar chart (animated,
  * re-rankable rows) and Sparkline. Everything is immediate mode: callers
  * pass sample arrays and a rectangle; only the small State structs in
- * charts.h persist. Declared in charts.h, used by panels.c. Gradient fills
- * use rlgl directly because raylib has no per-vertex-colour polygon
- * primitive.
+ * charts.h persist. Declared in charts.h, used by panels.c and
+ * page_devices.c. Gradient fills use rlgl directly because raylib has no
+ * per-vertex-colour polygon primitive.
  */
 #include "charts.h"
 

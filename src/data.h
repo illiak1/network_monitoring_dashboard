@@ -57,7 +57,8 @@ int ring_copy(const Ring *r, float *out);
 
 /* ---- Devices ---- */
 
-/* Order matters: the values are used as indices into label tables. */
+/* Order matters: the values are used as sort keys, filter values and as
+ * indices into label tables. */
 typedef enum { STATUS_UP, STATUS_WARNING, STATUS_DOWN } DeviceStatus;
 /* Indexes the name table in device_kind_name. */
 typedef enum { KIND_ROUTER, KIND_FIREWALL, KIND_SWITCH, KIND_ACCESS_POINT, KIND_SERVER, KIND_STORAGE, KIND_GATEWAY } DeviceKind;

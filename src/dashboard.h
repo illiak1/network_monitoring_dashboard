@@ -2,10 +2,10 @@
  *
  * Dashboard owns everything the program keeps between frames: Theme, Ui
  * (input and animation slots), Dataset (simulation) and the user's view
- * state (page, chart range, series toggles). dashboard.c runs the frame
- * loop and navigation; shell.c draws sidebar and header; pages.h/page_*.c
- * lay out the two pages from the cards in panels.h. main.c only creates
- * the window and calls dashboard_frame.
+ * state (page, filters, sort, selection). dashboard.c runs the frame loop
+ * and navigation; shell.c draws sidebar and header; pages.h/page_*.c lay
+ * out the three pages from the cards in panels.h. main.c only creates the
+ * window and calls dashboard_frame.
  */
 #ifndef DASHBOARD_H
 #define DASHBOARD_H
@@ -17,14 +17,25 @@
 #include "theme.h"
 #include "ui.h"
 
-/* Pages in sidebar order; the keys 1-2 map to this order. */
+/* Pages in sidebar order; the keys 1-3 map to this order. */
 typedef enum {
     PAGE_OVERVIEW,
+    PAGE_DEVICES,
     PAGE_TRAFFIC,
     PAGE_COUNT
 } Page;
 
+/* Sort column of the device table. */
+typedef enum {
+    SORT_STATUS,
+    SORT_NAME,
+    SORT_LATENCY,
+    SORT_LOSS,
+    SORT_TRAFFIC
+} SortKey;
+
 #define RANGE_COUNT 3        /* selectable bandwidth windows: 30 s, 1 m, 2 m */
+#define FILTER_ALL (-1)      /* "no filter"; outside the DeviceStatus/AlertSeverity value range */
 
 /* Whole application state. Large, so main.c keeps it in static storage. */
 typedef struct {
@@ -47,7 +58,13 @@ typedef struct {
     bool series_on[2];         /* inbound, outbound */
     LineChartState chart_overview;
     LineChartState chart_traffic;
+    LineChartState chart_device;
     BarChartState talkers;
+
+    int selected_device;       /* index into data.devices, -1 for none */
+    int device_filter;         /* FILTER_ALL or a DeviceStatus */
+    SortKey sort_key;
+    bool sort_desc;
 } Dashboard;
 
 /* Bandwidth window per range index, in seconds, and its button label. */
@@ -63,6 +80,10 @@ void dashboard_frame(Dashboard *d);
 
 /* Switches page and restarts the fade-in. No-op for the current page. */
 void dashboard_navigate(Dashboard *d, Page page);
+/* Sets the selected device (-1 clears) and re-snaps the detail chart axis. */
+void dashboard_select_device(Dashboard *d, int index);
+/* Selects a device and opens the Devices page. */
+void dashboard_open_device(Dashboard *d, int index);
 
 /* Palette colour for a device status / alert severity. */
 Color status_color(const Palette *c, DeviceStatus s);

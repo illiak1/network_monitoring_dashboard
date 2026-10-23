@@ -221,7 +221,7 @@ void panel_gauges(Dashboard *d, Rectangle r)
 
 /* Top talkers card: the busiest devices as stacked in/out bars. As many
  * rows as fit (1..TALKER_ROWS). Hovering shows a tooltip with the share
- * of total traffic. */
+ * of total traffic; clicking opens the device on the Devices page. */
 void panel_talkers(Dashboard *d, Rectangle r)
 {
     Ui *ui = &d->ui;
@@ -263,7 +263,7 @@ void panel_talkers(Dashboard *d, Rectangle r)
     if (hovered < 0)
         return;
 
-    /* 4. Tooltip for the hovered device. */
+    /* 4. Tooltip and click for the hovered device. */
     const Device *dev = &d->data.devices[hovered];
     char in[24], out[24], total[24], share[24];
     format_rate(in, sizeof in, dev->rx_mbps);
@@ -276,4 +276,7 @@ void panel_talkers(Dashboard *d, Rectangle r)
     ui_tip_row(ui, &c->series_out, "Outbound", out);
     ui_tip_row(ui, NULL, "Total", total);
     ui_tip_row(ui, NULL, "Share of traffic", share);
+    ui->cursor_hand = true;
+    if (ui->pressed)
+        dashboard_open_device(d, hovered);
 }

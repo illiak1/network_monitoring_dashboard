@@ -3,9 +3,8 @@
  * Immediate-mode drawing functions with no knowledge of Dashboard or
  * Dataset: callers hand in arrays and a Rectangle. Persistent animation
  * state (axis scale, bar positions) lives in the small *State structs the
- * caller owns. Implemented in charts.c on top of theme.h and anim.h; used by
- * panels.c.
-
+ * caller owns. Implemented in charts.c on top of theme.h and anim.h; used
+ * by panels.c and page_devices.c.
  */
 #ifndef CHARTS_H
 #define CHARTS_H

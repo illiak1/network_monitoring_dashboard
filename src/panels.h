@@ -2,8 +2,8 @@
  *
  * Each panel_* function draws one titled card into the rectangle it is
  * given, reads Dashboard state and handles its own hover/click. They are
- * composed into layouts by page_overview.c and page_traffic.c; panels.c implements them
- * with ui.h widgets and charts.h.
+ * composed into layouts by page_overview.c, page_traffic.c and
+ * page_devices.c; panels.c implements them with ui.h widgets and charts.h.
  */
 #ifndef PANELS_H
 #define PANELS_H
