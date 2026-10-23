@@ -1,7 +1,8 @@
 /* panels.c - dashboard cards shared by several pages.
  *
  * Sections: helpers, Bandwidth (line chart card), Gauges (latency and loss
- * with sparklines) and Top talkers (animated bars). Each panel_* function
+ * with sparklines), Top talkers (animated bars), Compact devices, and
+ * Alerts (shared alert row plus the compact list). Each panel_* function
  * draws one titled card with ui_panel, reads Dashboard state, and handles
  * its own hover, tooltip and click. Declared in panels.h; composed into
  * pages by page_overview.c and page_traffic.c.
@@ -13,6 +14,7 @@
 
 #include "anim.h"
 
+#define ALERT_COMPACT_ROW_H 50.0f  /* two-line row of the compact alert list, px */
 #define TALKER_ROWS 8              /* most bars shown; also the size of the local arrays */
 
 /* ----------------------------------------------------------- Helpers */
@@ -279,4 +281,215 @@ void panel_talkers(Dashboard *d, Rectangle r)
     ui->cursor_hand = true;
     if (ui->pressed)
         dashboard_open_device(d, hovered);
+}
+
+/* ---------------------------------------------------- Compact devices */
+
+/* Compact device list: unhealthy devices first, one row each with status
+ * dot, name, latency sparkline and latency value. The header shows the
+ * count per status. Rows slide to their new place when the order changes;
+ * clicking a row opens the device on the Devices page. */
+void panel_devices_compact(Dashboard *d, Rectangle r)
+{
+    Ui *ui = &d->ui;
+    const Theme *t = &d->theme;
+    const Palette *c = &t->c;
+    uint32_t key = ui_key("devices_compact");
+    Rectangle content = ui_panel(ui, r, "Devices", key);
+
+    /* 1. Header: status counts, placed right to left in the order down,
+     * warning, up (so "up" ends up leftmost). */
+    Rectangle hdr = ui_panel_header(r);
+    float x = hdr.x + hdr.width;
+    const DeviceStatus order_status[3] = { STATUS_DOWN, STATUS_WARNING, STATUS_UP };
+    const int counts[3] = { d->summary.down, d->summary.warning, d->summary.up };
+    for (int i = 0; i < 3; i++) {
+        char buf[16];
+        snprintf(buf, sizeof buf, "%d", counts[i]);
+        x -= header_legend(d, x, hdr.y + 15.0f, status_color(c, order_status[i]), buf) + 8.0f;
+    }
+
+    /* 2. Display order: three passes (down, warning, up) over the device
+     * array. Unhealthy devices first, stable within each group. */
+    int order[DEVICE_COUNT], n = 0;
+    for (int pass = 0; pass < 3; pass++) {
+        for (int i = 0; i < DEVICE_COUNT; i++) {
+            if (d->data.devices[i].status == order_status[pass])
+                order[n++] = i;
+        }
+    }
+
+    /* 3. Scrolling list. Each device has its own y slot (keyed by device
+     * index) eased toward its position; rows outside the view are skipped. */
+    const float row_h = 32.0f;
+    float content_h = (float)n * row_h;
+    uint32_t scroll_key = ui_key("devices_compact_scroll");
+    float off = ui_scroll_begin(ui, scroll_key, content, content_h);
+
+    for (int pos = 0; pos < n; pos++) {
+        int i = order[pos];
+        const Device *dev = &d->data.devices[i];
+        float y = ui_anim(ui, ui_key_i(key, 100 + (uint32_t)i), (float)pos * row_h, 14.0f);
+        Rectangle row = { content.x, content.y + y - off, content.width - 8.0f, row_h - 2.0f };
+        if (row.y + row.height < content.y || row.y > content.y + content.height)
+            continue;
+
+        bool hot = ui_hot(ui, row);
+        float hv = ui_anim(ui, ui_key_i(key, 200 + (uint32_t)i), hot ? 1.0f : 0.0f, 16.0f);
+        ui_rect(row, RADIUS_SM, theme_alpha(c->text, 0.055f * hv));
+
+        /* Status dot pulses for anything that is not UP. */
+        Color sc = status_color(c, dev->status);
+        ui_status_dot(ui, (Vector2){ row.x + 12.0f, row.y + row.height * 0.5f }, 3.5f, sc, dev->status != STATUS_UP);
+
+        /* Name takes the width left of the sparkline and latency columns. */
+        float lat_w = 58.0f, spark_w = 56.0f;
+        float text_y = row.y + (row.height - t->font_px[FONT_BODY]) * 0.5f;
+        Color name_col = dev->status == STATUS_DOWN ? c->text_dim : c->text;
+        theme_text_fit(t, FONT_BODY, dev->name, row.x + 28.0f, text_y, row.width - 28.0f - lat_w - spark_w - 16.0f, name_col);
+
+        /* Sparkline scale 0..max(60 ms, 2.5 x base latency): a per-device
+         * range that makes a spike visible relative to normal. */
+        float values[RING_CAP];
+        int cnt = ring_copy(&dev->latency_hist, values);
+        Rectangle sp = { row.x + row.width - lat_w - spark_w - 8.0f, row.y + 8.0f, spark_w, row.height - 16.0f };
+        if (dev->status != STATUS_DOWN)
+            chart_sparkline(sp, values, cnt, 0.0f, fmaxf(60.0f, dev->base_latency_ms * 2.5f), sc, false);
+
+        char lat[16];
+        if (dev->status == STATUS_DOWN)
+            snprintf(lat, sizeof lat, "down");
+        else
+            snprintf(lat, sizeof lat, "%.0f ms", (double)dev->latency_ms);
+        theme_text_right(t, FONT_MONO_SMALL, lat, row.x + row.width - 4.0f, text_y + 1.0f,
+                         dev->status == STATUS_DOWN ? c->crit : c->text_dim);
+
+        /* active == 0: ignore clicks that belong to a scrollbar drag. */
+        if (hot && ui->pressed && ui->active == 0)
+            dashboard_open_device(d, i);
+    }
+    ui_scroll_end(ui, scroll_key, content, content_h);
+}
+
+/* -------------------------------------------------------------- Alerts */
+
+/* Draws one alert row inside row. alpha is the fade-in factor from the
+ * list animation; acknowledged alerts are dimmed to 50%. full = false is
+ * the compact two-line form (message; severity, source and time),
+ * full = true the table form (badge, time, source, message, state).
+ * hover highlights the row and turns the state label into "Acknowledge". */
+void alert_row_draw(Dashboard *d, Rectangle row, const Alert *a, float alpha, bool full, bool hover)
+{
+    const Theme *t = &d->theme;
+    const Palette *c = &t->c;
+    Color sev = severity_color(c, a->severity);
+    float dim = a->acknowledged ? 0.5f : 1.0f;
+    float al = alpha * dim;
+    char clock[16];
+    format_clock(clock, sizeof clock, a->when);
+
+    /* Hover wash and the severity stripe on the left edge. */
+    if (hover)
+        ui_rect(row, RADIUS_SM, theme_alpha(c->text, 0.055f * alpha));
+    ui_rect((Rectangle){ row.x + 2.0f, row.y + 8.0f, 3.0f, row.height - 16.0f }, 1.5f, theme_alpha(sev, al));
+
+    /* Compact form. */
+    if (!full) {
+        float tx = row.x + 16.0f;
+        theme_text_fit(t, FONT_BODY, a->message, tx, row.y + 8.0f, row.width - 24.0f, theme_alpha(c->text, al));
+        const char *name = alert_severity_name(a->severity);
+        theme_text(t, FONT_CAPTION_BOLD, name, tx, row.y + 28.0f, theme_alpha(sev, al));
+        char rest[64];
+        snprintf(rest, sizeof rest, "%s  -  %s", a->source, clock);
+        float nw = theme_measure(t, FONT_CAPTION_BOLD, name).x;
+        theme_text_fit(t, FONT_CAPTION, rest, tx + nw + 8.0f, row.y + 28.0f, row.width - nw - 40.0f, theme_alpha(c->text_faint, alpha));
+        if (a->acknowledged)
+            ui_icon(ICON_CHECK, (Vector2){ row.x + row.width - 14.0f, row.y + 16.0f }, 12.0f, theme_alpha(c->text_faint, alpha));
+        return;
+    }
+
+    /* Full form: severity badge, time column, optional source column
+     * (only when the row is wider than 640 px), message, state label. */
+    float ty = row.y + (row.height - t->font_px[FONT_BODY]) * 0.5f;
+    const char *name = alert_severity_name(a->severity);
+    Rectangle badge = { row.x + 16.0f, row.y + (row.height - 20.0f) * 0.5f, 68.0f, 20.0f };
+    ui_rect(badge, 10.0f, theme_alpha(sev, 0.14f * al));
+    theme_text_center(t, FONT_CAPTION_BOLD, name, badge.x + badge.width * 0.5f, badge.y + 4.0f, theme_alpha(sev, al));
+
+    float x = badge.x + badge.width + 16.0f;
+    theme_text(t, FONT_MONO_SMALL, clock, x, ty + 1.0f, theme_alpha(c->text_dim, al));
+    x += 78.0f;
+
+    /* right_w reserves space for the state label so the message never runs under it. */
+    float right_w = 124.0f;
+    if (row.width > 640.0f) {
+        theme_text_fit(t, FONT_BODY_BOLD, a->source, x, ty, 112.0f, theme_alpha(c->text, al));
+        x += 130.0f;
+    }
+    theme_text_fit(t, FONT_BODY, a->message, x, ty, row.x + row.width - right_w - x, theme_alpha(c->text_dim, al * 1.15f > 1.0f ? 1.0f : al * 1.15f));
+
+    const char *state = a->acknowledged ? "Acknowledged" : (hover ? "Acknowledge" : "Open");
+    Color sc = a->acknowledged ? c->text_faint : (hover ? c->accent : c->text_dim);
+    theme_text_right(t, FONT_SMALL, state, row.x + row.width - 16.0f, ty, theme_alpha(sc, alpha));
+}
+
+/* Recent alerts card: the newest 40 alerts in a scrolling list with a
+ * "View all" chip. New alerts slide in from above and fade in; clicking
+ * a row opens the Alerts page. */
+void panel_alerts_compact(Dashboard *d, Rectangle r)
+{
+    Ui *ui = &d->ui;
+    const Theme *t = &d->theme;
+    uint32_t key = ui_key("alerts_compact");
+    Rectangle content = ui_panel(ui, r, "Recent alerts", key);
+
+    /* 1. "View all" chip in the header. */
+    Rectangle hdr = ui_panel_header(r);
+    hdr.y += 10.0f;
+    hdr.height = 26.0f;
+    const char *label = "View all";
+    Rectangle chip = ui_cut_right(&hdr, theme_measure(t, FONT_SMALL, label).x + 24.0f);
+    if (ui_chip(ui, ui_key_i(key, 1), chip, label, false, t->c.accent))
+        dashboard_navigate(d, PAGE_ALERTS);
+
+    /* 2. Scrolling list, capped at 40 rows. */
+    int total = data_alert_count(&d->data);
+    int n = total < 40 ? total : 40;
+    float content_h = (float)n * ALERT_COMPACT_ROW_H;
+    uint32_t scroll_key = ui_key("alerts_compact_scroll");
+    float off = ui_scroll_begin(ui, scroll_key, content, content_h);
+
+    for (int i = 0; i < n; i++) {
+        const Alert *a = data_alert(&d->data, i);
+        /* Per-alert animation slots keyed by serial, so a row keeps its
+         * state while its list position shifts. The 1000 offset keeps the
+         * keys apart from the small widget indices used above. */
+        uint32_t ak = ui_key_i(key, 1000 + a->serial);
+        bool is_new = d->data.tick_count - a->tick <= 2;
+        bool fresh, fresh_a;
+        float *ys = ui_slot(ui, ak, &fresh);
+        float *as = ui_slot(ui, ui_key_i(ak, 1), &fresh_a);
+        float slot_y = (float)i * ALERT_COMPACT_ROW_H;
+        /* A brand-new alert starts one row above and transparent and
+         * slides/fades in; an alert first seen later (page opened) is
+         * placed directly so the whole list does not animate. */
+        if (fresh)
+            *ys = is_new ? slot_y - ALERT_COMPACT_ROW_H : slot_y;
+        if (fresh_a)
+            *as = is_new ? 0.0f : 1.0f;
+        *ys = anim_approach(*ys, slot_y, 14.0f, ui->dt);
+        *as = anim_approach(*as, 1.0f, 8.0f, ui->dt);
+
+        Rectangle row = { content.x, content.y + *ys - off, content.width - 8.0f, ALERT_COMPACT_ROW_H - 2.0f };
+        if (row.y + row.height < content.y || row.y > content.y + content.height)
+            continue;
+        bool hot = ui_hot(ui, row);
+        alert_row_draw(d, row, a, *as, false, hot);
+        if (hot && ui->pressed && ui->active == 0)
+            dashboard_navigate(d, PAGE_ALERTS);
+    }
+    ui_scroll_end(ui, scroll_key, content, content_h);
+
+    if (total == 0)
+        theme_text_center(t, FONT_BODY, "No alerts", content.x + content.width * 0.5f, content.y + 20.0f, t->c.text_faint);
 }

@@ -4,7 +4,7 @@
  * (input and animation slots), Dataset (simulation) and the user's view
  * state (page, filters, sort, selection). dashboard.c runs the frame loop
  * and navigation; shell.c draws sidebar and header; pages.h/page_*.c lay
- * out the three pages from the cards in panels.h. main.c only creates the
+ * out the four pages from the cards in panels.h. main.c only creates the
  * window and calls dashboard_frame.
  */
 #ifndef DASHBOARD_H
@@ -17,11 +17,12 @@
 #include "theme.h"
 #include "ui.h"
 
-/* Pages in sidebar order; the keys 1-3 map to this order. */
+/* Pages in sidebar order; the keys 1-4 map to this order. */
 typedef enum {
     PAGE_OVERVIEW,
     PAGE_DEVICES,
     PAGE_TRAFFIC,
+    PAGE_ALERTS,
     PAGE_COUNT
 } Page;
 
@@ -65,6 +66,8 @@ typedef struct {
     int device_filter;         /* FILTER_ALL or a DeviceStatus */
     SortKey sort_key;
     bool sort_desc;
+
+    int alert_filter;          /* FILTER_ALL or an AlertSeverity */
 } Dashboard;
 
 /* Bandwidth window per range index, in seconds, and its button label. */

@@ -85,6 +85,7 @@ void dashboard_init(Dashboard *d)
     d->series_on[0] = d->series_on[1] = true;
     d->selected_device = 6;
     d->device_filter = FILTER_ALL;
+    d->alert_filter = FILTER_ALL;
     d->sort_key = SORT_STATUS;
     d->sort_desc = false;
 }
@@ -126,10 +127,10 @@ void dashboard_open_device(Dashboard *d, int index)
 
 /* ------------------------------------------------- Input, layout state */
 
-/* Global shortcuts: 1-3 pages, Space pause, B sidebar, F11 borderless. */
+/* Global shortcuts: 1-4 pages, Space pause, B sidebar, F11 borderless. */
 static void handle_keys(Dashboard *d)
 {
-    static const int page_keys[PAGE_COUNT] = { KEY_ONE, KEY_TWO, KEY_THREE };
+    static const int page_keys[PAGE_COUNT] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR };
     for (int i = 0; i < PAGE_COUNT; i++) {
         if (IsKeyPressed(page_keys[i]))
             dashboard_navigate(d, (Page)i);
@@ -196,6 +197,7 @@ void dashboard_frame(Dashboard *d)
     case PAGE_OVERVIEW: page_overview(d, content); break;
     case PAGE_DEVICES:  page_devices(d, content); break;
     case PAGE_TRAFFIC:  page_traffic(d, content); break;
+    case PAGE_ALERTS:   page_alerts(d, content); break;
     default: break;
     }
 

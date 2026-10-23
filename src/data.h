@@ -97,7 +97,8 @@ typedef struct {
 
 /* ---- Alerts ---- */
 
-/* Order matters: used as an array index (Summary.open_alerts, name table). */
+/* Order matters: used as an array index (Summary.open_alerts, name table)
+ * and as the alert filter value. */
 typedef enum { SEV_INFO, SEV_WARNING, SEV_CRITICAL, SEV_COUNT } AlertSeverity;
 
 typedef struct {

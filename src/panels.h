@@ -18,5 +18,13 @@ void panel_bandwidth(Dashboard *d, Rectangle r, LineChartState *chart, const cha
 void panel_gauges(Dashboard *d, Rectangle r);
 /* Ranked in/out bars of the busiest devices; click opens the device. */
 void panel_talkers(Dashboard *d, Rectangle r);
+/* Scrollable device list, unhealthy first; click opens the device. */
+void panel_devices_compact(Dashboard *d, Rectangle r);
+/* Scrollable list of the newest alerts; click opens the Alerts page. */
+void panel_alerts_compact(Dashboard *d, Rectangle r);
+
+/* Alert row used by the compact and full lists. alpha is the fade-in
+ * factor, full selects the table-style row, hover highlights it. */
+void alert_row_draw(Dashboard *d, Rectangle row, const Alert *a, float alpha, bool full, bool hover);
 
 #endif

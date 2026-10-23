@@ -1,7 +1,7 @@
 /* shell.c - application chrome: sidebar navigation and top header.
  *
- * Sidebar: brand, three page buttons with an animated active indicator,
- * collapse toggle, FPS/"simulated data" note. Header: page
+ * Sidebar: brand, four page buttons with an animated active indicator and
+ * alert badge, collapse toggle, FPS/"simulated data" note. Header: page
  * title, summary statistics (dropped by priority when space runs out),
  * LIVE/PAUSED pill, pause button and clock. Both are drawn after the page
  * by dashboard_frame and read Dashboard.summary computed for the frame.
@@ -17,8 +17,8 @@
 #define NAV_ITEM_GAP 4.0f   /* vertical gap between buttons, px */
 
 /* Labels and icons indexed by Page. */
-static const char *const PAGE_NAMES[PAGE_COUNT] = { "Overview", "Devices", "Traffic" };
-static const IconId PAGE_ICONS[PAGE_COUNT] = { ICON_DASHBOARD, ICON_DEVICES, ICON_TRAFFIC };
+static const char *const PAGE_NAMES[PAGE_COUNT] = { "Overview", "Devices", "Traffic", "Alerts" };
+static const IconId PAGE_ICONS[PAGE_COUNT] = { ICON_DASHBOARD, ICON_DEVICES, ICON_TRAFFIC, ICON_ALERTS };
 
 /* ----------------------------------------------------------- Sidebar */
 
@@ -36,6 +36,26 @@ static void draw_brand(Dashboard *d, Rectangle a, float expanded)
     if (expanded > 0.05f) {
         theme_text(t, FONT_HEADING, "NetMon", a.x + 62.0f, 15.0f, theme_alpha(c->text, expanded));
         theme_text(t, FONT_CAPTION, "Network dashboard", a.x + 62.0f, 34.0f, theme_alpha(c->text_faint, expanded));
+    }
+}
+
+/* Draws the open-alert count on a nav item: a number pill at the right
+ * edge when expanded, a plain dot near the icon when collapsed (the count
+ * does not fit there). The count is capped at 99. */
+static void draw_nav_badge(Dashboard *d, Rectangle item, int count, Color color, float expanded)
+{
+    char buf[8];
+    snprintf(buf, sizeof buf, "%d", count > 99 ? 99 : count);
+    float w = fmaxf(20.0f, ui_badge_width(&d->ui, buf));
+    if (expanded > 0.5f) {
+        Rectangle r = { item.x + item.width - w - 10.0f, item.y + (item.height - 18.0f) * 0.5f, w, 18.0f };
+        ui_rect(r, 9.0f, color);
+        theme_text_center(&d->theme, FONT_CAPTION_BOLD, buf, r.x + r.width * 0.5f, r.y + 2.5f, d->theme.c.bg);
+    } else {
+        /* Sidebar-coloured halo behind the dot separates it from the icon. */
+        Vector2 p = { item.x + 30.0f, item.y + 11.0f };
+        DrawCircleV(p, 4.5f, d->theme.c.sidebar);
+        DrawCircleV(p, 3.2f, color);
     }
 }
 
@@ -64,7 +84,12 @@ void shell_draw_sidebar(Dashboard *d, Rectangle a)
     ui_rect(ind, RADIUS_SM + 2, theme_alpha(c->accent, 0.13f));
     ui_rect((Rectangle){ a.x + 10.0f, ind_y + 9.0f, 3.0f, NAV_ITEM_H - 18.0f }, 1.5f, c->accent);
 
-    /* 3. Nav items: hover tint, icon, label with key hint, click. */
+    /* Info alerts do not count toward the badge. */
+    int open_serious = d->summary.open_alerts[SEV_WARNING] + d->summary.open_alerts[SEV_CRITICAL];
+
+    /* 3. Nav items: hover tint, icon, label with key hint, alert badge,
+     * click. The key hint is hidden on Alerts while the badge is shown
+     * (same place). */
     for (int i = 0; i < PAGE_COUNT; i++) {
         Rectangle item = { a.x + 10.0f, top + (float)i * (NAV_ITEM_H + NAV_ITEM_GAP), a.width - 20.0f, NAV_ITEM_H };
         bool hot = ui_hot(ui, item);
@@ -80,10 +105,15 @@ void shell_draw_sidebar(Dashboard *d, Rectangle a)
         if (expanded > 0.05f) {
             theme_text(t, FONT_BODY_BOLD, PAGE_NAMES[i], item.x + 46.0f, item.y + 11.0f,
                        theme_alpha(active ? c->text : theme_mix(c->text_dim, c->text, hv), expanded));
-            char key[2] = { (char)('1' + i), '\0' };
-            theme_text_right(t, FONT_MONO_SMALL, key, item.x + item.width - 12.0f, item.y + 12.0f,
-                             theme_alpha(c->text_faint, 0.7f * expanded));
+            if (i != PAGE_ALERTS || open_serious == 0) {
+                char key[2] = { (char)('1' + i), '\0' };
+                theme_text_right(t, FONT_MONO_SMALL, key, item.x + item.width - 12.0f, item.y + 12.0f,
+                                 theme_alpha(c->text_faint, 0.7f * expanded));
+            }
         }
+
+        if (i == PAGE_ALERTS && open_serious > 0)
+            draw_nav_badge(d, item, open_serious, d->summary.open_alerts[SEV_CRITICAL] > 0 ? c->crit : c->warn, expanded);
 
         if (hot && ui->pressed)
             dashboard_navigate(d, (Page)i);
@@ -133,12 +163,12 @@ typedef struct {
 } HeaderStat;
 
 /* Statistic ids; also the left-to-right drawing order. */
-enum { STAT_DEVICES, STAT_THROUGHPUT, STAT_LATENCY, STAT_LOSS, STAT_COUNT };
+enum { STAT_DEVICES, STAT_THROUGHPUT, STAT_LATENCY, STAT_LOSS, STAT_ALERTS, STAT_COUNT };
 
 /* Lower index = kept longer when the header runs out of room. Device
- * count and throughput rank above the latency and loss averages (the
- * gauges on the Overview page show those too). */
-static const int STAT_PRIORITY[STAT_COUNT] = { STAT_DEVICES, STAT_THROUGHPUT, STAT_LATENCY, STAT_LOSS };
+ * count, throughput and alerts rank above the latency and loss averages
+ * (the gauges on the Overview page show those too). */
+static const int STAT_PRIORITY[STAT_COUNT] = { STAT_DEVICES, STAT_THROUGHPUT, STAT_ALERTS, STAT_LATENCY, STAT_LOSS };
 
 /* Fills stats[] from the current summary: text, status colour and width.
  * Colours reuse the thresholds of the gauges and the utilisation alarm so
@@ -164,6 +194,11 @@ static void build_stats(const Dashboard *d, HeaderStat stats[STAT_COUNT])
     snprintf(stats[STAT_LOSS].value, sizeof stats[STAT_LOSS].value, "%.2f %%", (double)s->avg_loss_pct);
     stats[STAT_LOSS].color = chart_zone_color(&d->theme, s->avg_loss_pct, GAUGE_LOSS_MAX_PCT, GAUGE_LOSS_WARN_PCT, GAUGE_LOSS_CRIT_PCT);
 
+    int serious = s->open_alerts[SEV_WARNING] + s->open_alerts[SEV_CRITICAL];
+    stats[STAT_ALERTS].label = "OPEN ALERTS";
+    snprintf(stats[STAT_ALERTS].value, sizeof stats[STAT_ALERTS].value, "%d", serious);
+    stats[STAT_ALERTS].color = s->open_alerts[SEV_CRITICAL] > 0 ? c->crit : (serious > 0 ? c->warn : c->ok);
+
     for (int i = 0; i < STAT_COUNT; i++) {
         float lw = theme_measure(&d->theme, FONT_CAPTION, stats[i].label).x;
         float vw = theme_measure(&d->theme, FONT_MONO_BOLD, stats[i].value).x;
@@ -181,6 +216,11 @@ static const char *page_subtitle(const Dashboard *d, char *buf, size_t cap)
         snprintf(buf, cap, "%d monitored devices", DEVICE_COUNT);
         return buf;
     case PAGE_TRAFFIC: return "Bandwidth, utilisation and top talkers";
+    case PAGE_ALERTS:
+        snprintf(buf, cap, "%d open, %d in log",
+                 d->summary.open_alerts[SEV_INFO] + d->summary.open_alerts[SEV_WARNING] + d->summary.open_alerts[SEV_CRITICAL],
+                 data_alert_count(&d->data));
+        return buf;
     default: return "";
     }
 }
