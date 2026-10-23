@@ -59,7 +59,7 @@ static Palette make_palette(void)
         .grid          = rgb(0x1A2130),
         .text          = rgb(0xE8ECF4),
         .text_dim      = rgb(0x9BA5BA),
-        .text_faint    = rgb(0x646F88),
+        .text_faint    = rgb(0x7D88A2),
         .accent        = rgb(0x5B8CFF),
         .ok            = rgb(0x34D399),
         .warn          = rgb(0xF5B83D),

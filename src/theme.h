@@ -57,7 +57,7 @@ typedef struct {
     Color grid;          /* chart gridlines */
     Color text;          /* primary text */
     Color text_dim;      /* secondary text */
-    Color text_faint;    /* tertiary text: axis ticks, hints (~3.6:1 contrast on panel) */
+    Color text_faint;    /* tertiary text: axis ticks, hints (~5:1 contrast on panel) */
     Color accent;        /* selection, links, primary button */
     Color ok;            /* status colours: up / warning / down, also gauge zones */
     Color warn;
