@@ -1,7 +1,24 @@
+# Build output
 build/
-third_party/
+out/
 *.o
 *.d
+*.exe
+*.obj
+
+# Dependencies fetched at build time
+third_party/
+
+# IDE and OS files
+.vs/
+.idea/
+.vscode/
+CMakeSettings.json
+CMakeUserPresets.json
+.DS_Store
+Thumbs.db
+
+# Local files
 PROGRESS.md
 CLAUDE.md
 _staging/
